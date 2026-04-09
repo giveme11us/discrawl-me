@@ -18,7 +18,7 @@ const (
 	timeLayout         = time.RFC3339Nano
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 2
+	storeSchemaVersion = 3
 )
 
 type Store struct {
@@ -206,6 +206,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 		currentVersion = 2
+	}
+	if currentVersion < 3 {
+		if err := s.migrateV2toV3(ctx); err != nil {
+			return err
+		}
+		currentVersion = 3
 	}
 	if err := s.setSchemaVersion(ctx, storeSchemaVersion); err != nil {
 		return err

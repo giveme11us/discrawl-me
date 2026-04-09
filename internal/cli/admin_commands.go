@@ -13,6 +13,7 @@ import (
 	"github.com/steipete/discrawl/internal/config"
 	"github.com/steipete/discrawl/internal/discord/botclient"
 	"github.com/steipete/discrawl/internal/discord/userclient"
+	"github.com/steipete/discrawl/internal/embedder"
 	"github.com/steipete/discrawl/internal/store"
 	"github.com/steipete/discrawl/internal/syncer"
 )
@@ -167,6 +168,60 @@ func (r *runtime) runStatus(args []string) error {
 		return err
 	}
 	return r.print(status)
+}
+
+func (r *runtime) runEmbed(args []string) error {
+	fs := flag.NewFlagSet("embed", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return usageErr(err)
+	}
+	sub := fs.Args()
+	if len(sub) == 0 {
+		sub = []string{"status"}
+	}
+	switch sub[0] {
+	case "run":
+		provider := r.createEmbedProvider()
+		worker := embedder.NewWorker(r.store, provider, r.cfg.Search.Embeddings.BatchSize, r.logger)
+		total, err := worker.RunAll(r.ctx)
+		if err != nil {
+			return err
+		}
+		return r.print(map[string]any{
+			"processed": total,
+			"provider":  provider.Name(),
+			"dim":       provider.Dim(),
+		})
+	case "status":
+		provider := r.createEmbedProvider()
+		worker := embedder.NewWorker(r.store, provider, r.cfg.Search.Embeddings.BatchSize, r.logger)
+		backlog, err := worker.Backlog(r.ctx)
+		if err != nil {
+			return err
+		}
+		var embeddedCount int
+		_ = r.store.DB().QueryRowContext(r.ctx, `select count(*) from message_embeddings`).Scan(&embeddedCount)
+		return r.print(map[string]any{
+			"backlog":  backlog,
+			"embedded": embeddedCount,
+			"provider": provider.Name(),
+			"enabled":  r.cfg.Search.Embeddings.Enabled,
+		})
+	default:
+		return usageErr(fmt.Errorf("unknown embed subcommand %q (use: run, status)", sub[0]))
+	}
+}
+
+func (r *runtime) createEmbedProvider() embedder.Provider {
+	cfg := r.cfg.Search.Embeddings
+	switch cfg.Provider {
+	case "openai":
+		return embedder.NewOpenAI(cfg.APIKeyEnv, cfg.Model, 0)
+	default:
+		// Default to Ollama
+		return embedder.NewOllama("", cfg.Model, 0)
+	}
 }
 
 func (r *runtime) runDoctor(args []string) error {

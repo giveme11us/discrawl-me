@@ -44,3 +44,30 @@ func (s *Store) migrateV1toV2(ctx context.Context) error {
 	}
 	return tx.Commit()
 }
+
+// migrateV2toV3 adds message_embeddings table for vector storage.
+func (s *Store) migrateV2toV3(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	stmts := []string{
+		`create table if not exists message_embeddings (
+			message_id text primary key,
+			model      text not null,
+			dim        integer not null,
+			vec        blob not null,
+			created_at text not null
+		);`,
+		`create index if not exists idx_embeddings_model on message_embeddings(model);`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("migrate v2→v3: %w", err)
+		}
+	}
+	return tx.Commit()
+}
