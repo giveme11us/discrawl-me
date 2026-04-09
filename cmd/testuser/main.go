@@ -121,5 +121,32 @@ func main() {
 		}
 	}
 
+	// Test 6: DM messages
+	if len(dms) > 0 {
+		dm := dms[0]
+		dmName := dm.Name
+		if dmName == "" && len(dm.Recipients) > 0 {
+			dmName = dm.Recipients[0].Username
+		}
+		fmt.Printf("\n=== Test 6: Messages from DM with %s ===\n", dmName)
+		dmMsgs, err := client.ChannelMessages(ctx, dm.ID, 3, "", "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL DM Messages: %v\n", err)
+		} else {
+			fmt.Printf("OK  %d messages\n", len(dmMsgs))
+			for _, m := range dmMsgs {
+				author := "unknown"
+				if m.Author != nil {
+					author = m.Author.Username
+				}
+				content := m.Content
+				if len(content) > 80 {
+					content = content[:80] + "..."
+				}
+				fmt.Printf("    [%s] %s: %s\n", m.ID, author, content)
+			}
+		}
+	}
+
 	fmt.Println("\n=== ALL TESTS PASSED ===")
 }

@@ -16,6 +16,12 @@ type EventHandler interface {
 	OnMemberDelete(context.Context, string, string) error
 }
 
+// PrivateChannelLister is optionally implemented by clients that can list
+// DM and group DM channels (user-token mode only).
+type PrivateChannelLister interface {
+	PrivateChannels(ctx context.Context) ([]*discordgo.Channel, error)
+}
+
 // Client is the interface for interacting with the Discord API.
 // Implementations include botclient.BotClient (bot token) and,
 // in the future, userclient.UserClient (user token / self-bot).

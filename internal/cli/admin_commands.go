@@ -108,6 +108,7 @@ func (r *runtime) runSync(args []string) error {
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
+	includeDMs := fs.Bool("include-dms", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -130,6 +131,7 @@ func (r *runtime) runSync(args []string) error {
 		Concurrency: *concurrency,
 		Since:       sinceTime,
 		Embeddings:  *withEmbeddings,
+		IncludeDMs:  *includeDMs,
 	}
 	stats, err := r.syncer.Sync(r.ctx, opts)
 	if err != nil {
