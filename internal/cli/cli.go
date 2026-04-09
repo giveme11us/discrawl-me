@@ -12,6 +12,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/steipete/discrawl/internal/config"
 	"github.com/steipete/discrawl/internal/discord/botclient"
+	"github.com/steipete/discrawl/internal/discord/userclient"
 	"github.com/steipete/discrawl/internal/store"
 	"github.com/steipete/discrawl/internal/syncer"
 )
@@ -172,6 +173,9 @@ func (r *runtime) withServices(withDiscord bool, fn func() error) error {
 				token, err := config.ResolveDiscordToken(cfg)
 				if err != nil {
 					return nil, err
+				}
+				if cfg.IsUserMode() {
+					return userclient.New(token.Token, cfg.Discord.User)
 				}
 				return botclient.New(token.Token)
 			}

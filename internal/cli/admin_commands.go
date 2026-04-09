@@ -12,6 +12,7 @@ import (
 
 	"github.com/steipete/discrawl/internal/config"
 	"github.com/steipete/discrawl/internal/discord/botclient"
+	"github.com/steipete/discrawl/internal/discord/userclient"
 	"github.com/steipete/discrawl/internal/store"
 	"github.com/steipete/discrawl/internal/syncer"
 )
@@ -48,6 +49,9 @@ func (r *runtime) runInit(args []string) error {
 	discordFactory := r.newDiscord
 	if discordFactory == nil {
 		discordFactory = func(cfg config.Config) (discordClient, error) {
+			if cfg.IsUserMode() {
+				return userclient.New(token.Token, cfg.Discord.User)
+			}
 			return botclient.New(token.Token)
 		}
 	}
@@ -185,6 +189,9 @@ func (r *runtime) runDoctor(args []string) error {
 		discordFactory := r.newDiscord
 		if discordFactory == nil {
 			discordFactory = func(cfg config.Config) (discordClient, error) {
+				if cfg.IsUserMode() {
+					return userclient.New(token.Token, cfg.Discord.User)
+				}
 				return botclient.New(token.Token)
 			}
 		}
