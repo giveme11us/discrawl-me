@@ -141,10 +141,10 @@ func Default() Config {
 // DefaultUserConfig returns sensible defaults for user-token mode.
 func DefaultUserConfig() UserConfig {
 	return UserConfig{
-		ClientBuildNumber: 366934,
-		BrowserVersion:    "131.0.0.0",
-		UserAgent:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-		Locale:            "en-US",
+		ClientBuildNumber: 525145,
+		BrowserVersion:    "146.0.0.0",
+		UserAgent:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+		Locale:            "it",
 		MinRequestGapMs:   1000,
 		JitterMsMin:       500,
 		JitterMsMax:       2000,

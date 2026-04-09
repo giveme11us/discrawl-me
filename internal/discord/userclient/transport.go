@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -17,20 +19,26 @@ const discordAPIBase = "https://discord.com/api/v10"
 // superProperties is the X-Super-Properties JSON payload that mimics a real
 // Discord web client. Fields must stay in sync with what the client sends.
 type superProperties struct {
-	OS                     string `json:"os"`
-	Browser                string `json:"browser"`
-	Device                 string `json:"device"`
-	SystemLocale           string `json:"system_locale"`
-	BrowserUserAgent       string `json:"browser_user_agent"`
-	BrowserVersion         string `json:"browser_version"`
-	OSVersion              string `json:"os_version"`
-	Referrer               string `json:"referrer"`
-	ReferringDomain        string `json:"referring_domain"`
-	ReferrerCurrent        string `json:"referrer_current"`
-	ReferringDomainCurrent string `json:"referring_domain_current"`
-	ReleaseChannel         string `json:"release_channel"`
-	ClientBuildNumber      int    `json:"client_build_number"`
-	ClientEventSource      *int   `json:"client_event_source"`
+	OS                        string `json:"os"`
+	Browser                   string `json:"browser"`
+	Device                    string `json:"device"`
+	SystemLocale              string `json:"system_locale"`
+	HasClientMods             bool   `json:"has_client_mods"`
+	BrowserUserAgent          string `json:"browser_user_agent"`
+	BrowserVersion            string `json:"browser_version"`
+	OSVersion                 string `json:"os_version"`
+	Referrer                  string `json:"referrer"`
+	ReferringDomain           string `json:"referring_domain"`
+	SearchEngine              string `json:"search_engine"`
+	ReferrerCurrent           string `json:"referrer_current"`
+	ReferringDomainCurrent    string `json:"referring_domain_current"`
+	ReleaseChannel            string `json:"release_channel"`
+	ClientBuildNumber         int    `json:"client_build_number"`
+	ClientEventSource         *int   `json:"client_event_source"`
+	ClientLaunchID            string `json:"client_launch_id"`
+	LaunchSignature           string `json:"launch_signature"`
+	ClientHeartbeatSessionID  string `json:"client_heartbeat_session_id"`
+	ClientAppState            string `json:"client_app_state"`
 }
 
 // transportConfig holds the immutable configuration for the HTTP transport.
@@ -67,23 +75,42 @@ func newTransport(cfg transportConfig) *transport {
 
 func buildSuperProperties(userAgent, browserVersion, locale string, buildNumber int) string {
 	props := superProperties{
-		OS:                     "Mac OS X",
-		Browser:                "Chrome",
-		Device:                 "",
-		SystemLocale:           locale,
-		BrowserUserAgent:       userAgent,
-		BrowserVersion:         browserVersion,
-		OSVersion:              "10.15.7",
-		Referrer:               "",
-		ReferringDomain:        "",
-		ReferrerCurrent:        "",
-		ReferringDomainCurrent: "",
-		ReleaseChannel:         "stable",
-		ClientBuildNumber:      buildNumber,
-		ClientEventSource:      nil,
+		OS:                       "Mac OS X",
+		Browser:                  "Chrome",
+		Device:                   "",
+		SystemLocale:             locale,
+		HasClientMods:            false,
+		BrowserUserAgent:         userAgent,
+		BrowserVersion:           browserVersion,
+		OSVersion:                "10.15.7",
+		Referrer:                 "https://www.google.com/",
+		ReferringDomain:          "www.google.com",
+		SearchEngine:             "google",
+		ReferrerCurrent:          "https://discord.com/",
+		ReferringDomainCurrent:   "discord.com",
+		ReleaseChannel:           "stable",
+		ClientBuildNumber:        buildNumber,
+		ClientEventSource:        nil,
+		ClientLaunchID:           generateUUID(),
+		LaunchSignature:          generateUUID(),
+		ClientHeartbeatSessionID: generateUUID(),
+		ClientAppState:           "focused",
 	}
 	data, _ := json.Marshal(props)
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+func generateUUID() string {
+	var buf [16]byte
+	_, _ = cryptorand.Read(buf[:])
+	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
+	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
+		hex.EncodeToString(buf[0:4]),
+		hex.EncodeToString(buf[4:6]),
+		hex.EncodeToString(buf[6:8]),
+		hex.EncodeToString(buf[8:10]),
+		hex.EncodeToString(buf[10:16]))
 }
 
 // do executes an HTTP request with all user-mode headers and rate limiting.
@@ -107,12 +134,13 @@ func (t *transport) do(ctx context.Context, method, path string, body *strings.R
 		return nil, err
 	}
 
-	// User-mode headers
+	// User-mode headers — must match a real Discord web client
 	req.Header.Set("Authorization", t.cfg.token) // no "Bot " prefix
 	req.Header.Set("User-Agent", t.cfg.userAgent)
 	req.Header.Set("X-Super-Properties", t.cfg.superPropsEncoded)
 	req.Header.Set("X-Discord-Locale", t.cfg.locale)
-	req.Header.Set("X-Discord-Timezone", "America/New_York")
+	req.Header.Set("X-Discord-Timezone", "Europe/Rome")
+	req.Header.Set("X-Debug-Options", "bugReporterEnabled")
 	req.Header.Set("Accept-Language", t.cfg.locale+",en;q=0.9")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Origin", "https://discord.com")
@@ -120,7 +148,7 @@ func (t *transport) do(ctx context.Context, method, path string, body *strings.R
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Sec-Ch-Ua", `"Chromium";v="131", "Not_A Brand";v="24"`)
+	req.Header.Set("Sec-Ch-Ua", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`)
 	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
 	req.Header.Set("Sec-Ch-Ua-Platform", `"macOS"`)
 	if body != nil {
