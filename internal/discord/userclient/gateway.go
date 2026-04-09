@@ -299,6 +299,26 @@ func (g *Gateway) dispatchEvent(ctx context.Context, p gatewayPayload) error {
 		}
 		return g.handler.OnMemberDelete(ctx, data.GuildID, data.User.ID)
 
+	case "MESSAGE_REACTION_ADD":
+		if rh, ok := g.handler.(discord.ReactionHandler); ok {
+			var evt discord.ReactionEvent
+			if err := json.Unmarshal(p.Data, &evt); err != nil {
+				return nil
+			}
+			return rh.OnReactionAdd(ctx, &evt)
+		}
+		return nil
+
+	case "MESSAGE_REACTION_REMOVE":
+		if rh, ok := g.handler.(discord.ReactionHandler); ok {
+			var evt discord.ReactionEvent
+			if err := json.Unmarshal(p.Data, &evt); err != nil {
+				return nil
+			}
+			return rh.OnReactionRemove(ctx, &evt)
+		}
+		return nil
+
 	default:
 		return nil
 	}
