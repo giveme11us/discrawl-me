@@ -224,13 +224,13 @@ func TestSuperPropertiesEncoding(t *testing.T) {
 	require.NotContains(t, encoded, " ")
 }
 
-func TestUserClientTailNotImplemented(t *testing.T) {
+func TestUserClientTailRequiresHandler(t *testing.T) {
 	cfg := testConfig()
 	client, err := New("token", cfg)
 	require.NoError(t, err)
 	err = client.Tail(context.Background(), nil)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "not yet implemented")
+	require.Contains(t, err.Error(), "missing event handler")
 }
 
 // Compile-time check.

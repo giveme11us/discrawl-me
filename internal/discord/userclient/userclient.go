@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 // super-properties headers, and read-only enforcement.
 type UserClient struct {
 	transport *transport
+	gateway   *Gateway
 }
 
 // Compile-time check that UserClient satisfies the discord.Client interface.
@@ -42,6 +44,7 @@ func New(token string, cfg config.UserConfig) (*UserClient, error) {
 	}
 	return &UserClient{
 		transport: newTransport(tcfg),
+		gateway:   NewGateway(token, tcfg.superPropsEncoded, slog.Default()),
 	}, nil
 }
 
@@ -199,10 +202,9 @@ func (c *UserClient) ChannelMessage(ctx context.Context, channelID, messageID st
 	return &msg, nil
 }
 
-// Tail is not yet implemented for UserClient. It will use a custom WebSocket
-// Gateway client in a future PR. For now, it returns an error.
-func (c *UserClient) Tail(_ context.Context, _ discord.EventHandler) error {
-	return fmt.Errorf("tail (Gateway) is not yet implemented for user-token mode; use sync for now")
+// Tail connects to the Discord Gateway and dispatches live events.
+func (c *UserClient) Tail(ctx context.Context, handler discord.EventHandler) error {
+	return c.gateway.Run(ctx, handler)
 }
 
 // PrivateChannels returns the user's DM and group DM channels.

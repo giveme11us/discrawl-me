@@ -8,6 +8,9 @@ import (
 	"os"
 	"time"
 
+	"sync/atomic"
+
+	"github.com/bwmarrin/discordgo"
 	"github.com/steipete/discrawl/internal/config"
 	"github.com/steipete/discrawl/internal/discord/userclient"
 )
@@ -148,5 +151,47 @@ func main() {
 		}
 	}
 
+	// Test 7: Gateway (Tail) — connect for 10s
+	fmt.Println("\n=== Test 7: Gateway (10s) ===")
+	tailCtx, tailCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer tailCancel()
+	counter := &eventCounter{}
+	err = client.Tail(tailCtx, counter)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Gateway error: %v\n", err)
+	}
+	fmt.Printf("OK  events received in 10s: creates=%d updates=%d deletes=%d channels=%d\n",
+		counter.creates.Load(), counter.updates.Load(), counter.deletes.Load(), counter.channels.Load())
+
 	fmt.Println("\n=== ALL TESTS PASSED ===")
+}
+
+type eventCounter struct {
+	creates  atomic.Int32
+	updates  atomic.Int32
+	deletes  atomic.Int32
+	channels atomic.Int32
+}
+
+func (e *eventCounter) OnMessageCreate(_ context.Context, _ *discordgo.Message) error {
+	e.creates.Add(1)
+	return nil
+}
+func (e *eventCounter) OnMessageUpdate(_ context.Context, _ *discordgo.Message) error {
+	e.updates.Add(1)
+	return nil
+}
+func (e *eventCounter) OnMessageDelete(_ context.Context, _ *discordgo.MessageDelete) error {
+	e.deletes.Add(1)
+	return nil
+}
+func (e *eventCounter) OnChannelUpsert(_ context.Context, _ *discordgo.Channel) error {
+	e.channels.Add(1)
+	return nil
+}
+func (e *eventCounter) OnMemberUpsert(_ context.Context, _ string, _ *discordgo.Member) error {
+	return nil
+}
+func (e *eventCounter) OnMemberDelete(_ context.Context, _ string, _ string) error {
+	return nil
 }
