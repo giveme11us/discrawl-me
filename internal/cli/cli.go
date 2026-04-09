@@ -139,6 +139,8 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withServices(false, func() error { return r.runStatus(rest[1:]) })
 	case "embed":
 		return r.withServices(false, func() error { return r.runEmbed(rest[1:]) })
+	case "mcp":
+		return r.withServices(false, func() error { return r.runMCP(rest[1:]) })
 	case "doctor":
 		return r.runDoctor(rest[1:])
 	default:

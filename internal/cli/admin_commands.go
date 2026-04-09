@@ -14,6 +14,7 @@ import (
 	"github.com/steipete/discrawl/internal/discord/botclient"
 	"github.com/steipete/discrawl/internal/discord/userclient"
 	"github.com/steipete/discrawl/internal/embedder"
+	"github.com/steipete/discrawl/internal/mcp"
 	"github.com/steipete/discrawl/internal/store"
 	"github.com/steipete/discrawl/internal/syncer"
 )
@@ -211,6 +212,12 @@ func (r *runtime) runEmbed(args []string) error {
 	default:
 		return usageErr(fmt.Errorf("unknown embed subcommand %q (use: run, status)", sub[0]))
 	}
+}
+
+func (r *runtime) runMCP(_ []string) error {
+	tools := mcp.NewToolHandler(r.store)
+	server := mcp.NewServer(tools, r.logger)
+	return server.Run(r.ctx, os.Stdin, r.stdout)
 }
 
 func (r *runtime) createEmbedProvider() embedder.Provider {
