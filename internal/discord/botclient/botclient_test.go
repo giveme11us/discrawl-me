@@ -1,4 +1,4 @@
-package discord
+package botclient
 
 import (
 	"context"
@@ -13,10 +13,11 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
+	"github.com/steipete/discrawl/internal/discord"
 	"github.com/stretchr/testify/require"
 )
 
-func TestClientRESTWrappers(t *testing.T) {
+func TestBotClientRESTWrappers(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v10/users/@me", writeJSON(map[string]any{"id": "bot"}))
 	mux.HandleFunc("/api/v10/users/@me/guilds", writeJSON([]map[string]any{
@@ -165,10 +166,10 @@ func TestTailRequiresHandler(t *testing.T) {
 	client, err := New("token")
 	require.NoError(t, err)
 	require.Error(t, client.Tail(context.Background(), nil))
-	require.NoError(t, (&Client{}).Close())
+	require.NoError(t, (&BotClient{}).Close())
 }
 
-func TestClientChannelMessagesTimesOut(t *testing.T) {
+func TestBotClientChannelMessagesTimesOut(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v10/channels/c1/messages", func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
@@ -506,3 +507,6 @@ func (s *slowHandler) OnMemberUpsert(context.Context, string, *discordgo.Member)
 func (s *slowHandler) OnMemberDelete(context.Context, string, string) error {
 	return nil
 }
+
+// Compile-time check that recordingHandler implements discord.EventHandler.
+var _ discord.EventHandler = (*recordingHandler)(nil)
