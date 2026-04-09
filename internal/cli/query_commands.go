@@ -27,15 +27,39 @@ func (r *runtime) runSearch(args []string) error {
 	if fs.NArg() != 1 {
 		return usageErr(fmt.Errorf("search requires a query"))
 	}
-	_ = mode
-	results, err := r.store.SearchMessages(r.ctx, store.SearchOptions{
+	opts := store.SearchOptions{
 		Query:        fs.Arg(0),
 		GuildIDs:     r.resolveSearchGuilds(*guildFlag, *guildsFlag),
 		Channel:      *channel,
 		Author:       *author,
 		Limit:        *limit,
 		IncludeEmpty: *includeEmpty,
-	})
+		Mode:         *mode,
+	}
+	// For vector/hybrid modes, embed the query
+	if *mode == "vector" || *mode == "hybrid" {
+		provider := r.createEmbedProvider()
+		if provider != nil {
+			vecs, err := provider.Embed(r.ctx, []string{opts.Query})
+			if err == nil && len(vecs) > 0 {
+				opts.QueryVec = vecs[0]
+			}
+		}
+	}
+	var results []store.SearchResult
+	var err error
+	switch *mode {
+	case "vector":
+		if len(opts.QueryVec) > 0 {
+			results, err = r.store.VectorSearch(r.ctx, opts.QueryVec, opts.Limit)
+		} else {
+			results, err = r.store.SearchMessages(r.ctx, opts)
+		}
+	case "hybrid":
+		results, err = r.store.HybridSearch(r.ctx, opts)
+	default:
+		results, err = r.store.SearchMessages(r.ctx, opts)
+	}
 	if err != nil {
 		return err
 	}

@@ -48,6 +48,8 @@ type SearchOptions struct {
 	Author       string
 	Limit        int
 	IncludeEmpty bool
+	Mode         string // "fts" (default), "vector", "hybrid"
+	QueryVec     []float32
 }
 
 type SearchResult struct {
@@ -59,6 +61,7 @@ type SearchResult struct {
 	AuthorName  string    `json:"author_name"`
 	Content     string    `json:"content"`
 	CreatedAt   time.Time `json:"created_at"`
+	Score       float64   `json:"score,omitempty"`
 }
 
 type MentionRow struct {
