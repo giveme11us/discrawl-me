@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/steipete/discrawl/internal/discord/botclient"
+	"github.com/steipete/discrawl/internal/discord/userclient"
+	"github.com/steipete/discrawl/internal/embedder"
+	"github.com/steipete/discrawl/internal/mcp"
 	"github.com/steipete/discrawl/internal/store"
 	"github.com/steipete/discrawl/internal/syncer"
 )
@@ -48,7 +51,10 @@ func (r *runtime) runInit(args []string) error {
 	discordFactory := r.newDiscord
 	if discordFactory == nil {
 		discordFactory = func(cfg config.Config) (discordClient, error) {
-			return discord.New(token.Token)
+			if cfg.IsUserMode() {
+				return userclient.New(token.Token, cfg.Discord.User)
+			}
+			return botclient.New(token.Token)
 		}
 	}
 	client, err := discordFactory(cfg)
@@ -104,6 +110,7 @@ func (r *runtime) runSync(args []string) error {
 	withEmbeddings := fs.Bool("with-embeddings", false, "")
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
+	includeDMs := fs.Bool("include-dms", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -126,6 +133,7 @@ func (r *runtime) runSync(args []string) error {
 		Concurrency: *concurrency,
 		Since:       sinceTime,
 		Embeddings:  *withEmbeddings,
+		IncludeDMs:  *includeDMs,
 	}
 	stats, err := r.syncer.Sync(r.ctx, opts)
 	if err != nil {
@@ -163,6 +171,66 @@ func (r *runtime) runStatus(args []string) error {
 	return r.print(status)
 }
 
+func (r *runtime) runEmbed(args []string) error {
+	fs := flag.NewFlagSet("embed", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return usageErr(err)
+	}
+	sub := fs.Args()
+	if len(sub) == 0 {
+		sub = []string{"status"}
+	}
+	switch sub[0] {
+	case "run":
+		provider := r.createEmbedProvider()
+		worker := embedder.NewWorker(r.store, provider, r.cfg.Search.Embeddings.BatchSize, r.logger)
+		total, err := worker.RunAll(r.ctx)
+		if err != nil {
+			return err
+		}
+		return r.print(map[string]any{
+			"processed": total,
+			"provider":  provider.Name(),
+			"dim":       provider.Dim(),
+		})
+	case "status":
+		provider := r.createEmbedProvider()
+		worker := embedder.NewWorker(r.store, provider, r.cfg.Search.Embeddings.BatchSize, r.logger)
+		backlog, err := worker.Backlog(r.ctx)
+		if err != nil {
+			return err
+		}
+		var embeddedCount int
+		_ = r.store.DB().QueryRowContext(r.ctx, `select count(*) from message_embeddings`).Scan(&embeddedCount)
+		return r.print(map[string]any{
+			"backlog":  backlog,
+			"embedded": embeddedCount,
+			"provider": provider.Name(),
+			"enabled":  r.cfg.Search.Embeddings.Enabled,
+		})
+	default:
+		return usageErr(fmt.Errorf("unknown embed subcommand %q (use: run, status)", sub[0]))
+	}
+}
+
+func (r *runtime) runMCP(_ []string) error {
+	tools := mcp.NewToolHandler(r.store)
+	server := mcp.NewServer(tools, r.logger)
+	return server.Run(r.ctx, os.Stdin, r.stdout)
+}
+
+func (r *runtime) createEmbedProvider() embedder.Provider {
+	cfg := r.cfg.Search.Embeddings
+	switch cfg.Provider {
+	case "openai":
+		return embedder.NewOpenAI(cfg.APIKeyEnv, cfg.Model, 0)
+	default:
+		// Default to Ollama
+		return embedder.NewOllama("", cfg.Model, 0)
+	}
+}
+
 func (r *runtime) runDoctor(args []string) error {
 	if len(args) != 0 {
 		return usageErr(fmt.Errorf("doctor takes no arguments"))
@@ -185,7 +253,10 @@ func (r *runtime) runDoctor(args []string) error {
 		discordFactory := r.newDiscord
 		if discordFactory == nil {
 			discordFactory = func(cfg config.Config) (discordClient, error) {
-				return discord.New(token.Token)
+				if cfg.IsUserMode() {
+					return userclient.New(token.Token, cfg.Discord.User)
+				}
+				return botclient.New(token.Token)
 			}
 		}
 		client, clientErr := discordFactory(cfg)

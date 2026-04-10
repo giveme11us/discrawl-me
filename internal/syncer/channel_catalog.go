@@ -421,7 +421,9 @@ func isMessageChannel(channel *discordgo.Channel) bool {
 		discordgo.ChannelTypeGuildNews,
 		discordgo.ChannelTypeGuildPublicThread,
 		discordgo.ChannelTypeGuildPrivateThread,
-		discordgo.ChannelTypeGuildNewsThread:
+		discordgo.ChannelTypeGuildNewsThread,
+		discordgo.ChannelTypeDM,
+		discordgo.ChannelTypeGroupDM:
 		return true
 	default:
 		return false
@@ -470,6 +472,10 @@ func channelKind(channel *discordgo.Channel) string {
 		return "thread_announcement"
 	case discordgo.ChannelTypeGuildVoice:
 		return "voice"
+	case discordgo.ChannelTypeDM:
+		return "dm"
+	case discordgo.ChannelTypeGroupDM:
+		return "group_dm"
 	default:
 		return fmt.Sprintf("type_%d", channel.Type)
 	}

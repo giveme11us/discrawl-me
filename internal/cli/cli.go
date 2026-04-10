@@ -11,7 +11,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/steipete/discrawl/internal/discord/botclient"
+	"github.com/steipete/discrawl/internal/discord/userclient"
 	"github.com/steipete/discrawl/internal/store"
 	"github.com/steipete/discrawl/internal/syncer"
 )
@@ -136,6 +137,10 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withServices(false, func() error { return r.runChannels(rest[1:]) })
 	case "status":
 		return r.withServices(false, func() error { return r.runStatus(rest[1:]) })
+	case "embed":
+		return r.withServices(false, func() error { return r.runEmbed(rest[1:]) })
+	case "mcp":
+		return r.withServices(false, func() error { return r.runMCP(rest[1:]) })
 	case "doctor":
 		return r.runDoctor(rest[1:])
 	default:
@@ -173,7 +178,10 @@ func (r *runtime) withServices(withDiscord bool, fn func() error) error {
 				if err != nil {
 					return nil, err
 				}
-				return discord.New(token.Token)
+				if cfg.IsUserMode() {
+					return userclient.New(token.Token, cfg.Discord.User)
+				}
+				return botclient.New(token.Token)
 			}
 		}
 		r.client, err = discordFactory(cfg)

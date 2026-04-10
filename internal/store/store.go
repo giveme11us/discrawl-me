@@ -18,7 +18,7 @@ const (
 	timeLayout         = time.RFC3339Nano
 	messageFTSVersion  = "2"
 	memberFTSVersion   = "1"
-	storeSchemaVersion = 1
+	storeSchemaVersion = 3
 )
 
 type Store struct {
@@ -48,6 +48,8 @@ type SearchOptions struct {
 	Author       string
 	Limit        int
 	IncludeEmpty bool
+	Mode         string // "fts" (default), "vector", "hybrid"
+	QueryVec     []float32
 }
 
 type SearchResult struct {
@@ -59,6 +61,7 @@ type SearchResult struct {
 	AuthorName  string    `json:"author_name"`
 	Content     string    `json:"content"`
 	CreatedAt   time.Time `json:"created_at"`
+	Score       float64   `json:"score,omitempty"`
 }
 
 type MentionRow struct {
@@ -199,9 +202,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.applyBaselineSchema(ctx); err != nil {
 			return err
 		}
-		if err := s.setSchemaVersion(ctx, storeSchemaVersion); err != nil {
+		currentVersion = 1
+	}
+	if currentVersion < 2 {
+		if err := s.migrateV1toV2(ctx); err != nil {
 			return err
 		}
+		currentVersion = 2
+	}
+	if currentVersion < 3 {
+		if err := s.migrateV2toV3(ctx); err != nil {
+			return err
+		}
+		currentVersion = 3
+	}
+	if err := s.setSchemaVersion(ctx, storeSchemaVersion); err != nil {
+		return err
 	}
 	if version, err := s.schemaVersion(ctx); err != nil {
 		return err

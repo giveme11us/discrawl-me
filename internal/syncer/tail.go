@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/steipete/discrawl/internal/discord"
 	"github.com/steipete/discrawl/internal/store"
 )
 
@@ -70,6 +71,16 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 	if !t.allowGuild(msg.GuildID) {
 		return nil
 	}
+	// Save edit history snapshot
+	if msg.EditedTimestamp != nil {
+		raw, _ := json.Marshal(msg)
+		_ = t.store.AppendMessageEdit(ctx, store.MessageEditRecord{
+			MessageID: msg.ID,
+			EditedAt:  msg.EditedTimestamp.UTC().Format(time.RFC3339Nano),
+			Content:   msg.Content,
+			RawJSON:   string(raw),
+		})
+	}
 	mutation, err := buildMessageMutation(ctx, msg, "", false, t.attachmentTextEnabled)
 	if err != nil {
 		return err
@@ -113,6 +124,36 @@ func (t *tailHandler) OnMemberDelete(ctx context.Context, guildID, userID string
 		return nil
 	}
 	return t.store.DeleteMember(ctx, guildID, userID)
+}
+
+func (t *tailHandler) OnReactionAdd(ctx context.Context, evt *discord.ReactionEvent) error {
+	if !t.allowGuild(evt.GuildID) {
+		return nil
+	}
+	return t.store.AppendReactionEvent(ctx, store.ReactionEventRecord{
+		MessageID: evt.MessageID,
+		ChannelID: evt.ChannelID,
+		GuildID:   evt.GuildID,
+		UserID:    evt.UserID,
+		EmojiName: evt.Emoji.Name,
+		EmojiID:   evt.Emoji.ID,
+		Action:    "add",
+	})
+}
+
+func (t *tailHandler) OnReactionRemove(ctx context.Context, evt *discord.ReactionEvent) error {
+	if !t.allowGuild(evt.GuildID) {
+		return nil
+	}
+	return t.store.AppendReactionEvent(ctx, store.ReactionEventRecord{
+		MessageID: evt.MessageID,
+		ChannelID: evt.ChannelID,
+		GuildID:   evt.GuildID,
+		UserID:    evt.UserID,
+		EmojiName: evt.Emoji.Name,
+		EmojiID:   evt.Emoji.ID,
+		Action:    "remove",
+	})
 }
 
 func (t *tailHandler) allowGuild(guildID string) bool {

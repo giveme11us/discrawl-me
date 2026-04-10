@@ -32,10 +32,25 @@ type Config struct {
 }
 
 type DiscordConfig struct {
-	TokenSource    string `toml:"token_source"`
-	OpenClawConfig string `toml:"openclaw_config"`
-	Account        string `toml:"account"`
-	TokenEnv       string `toml:"token_env"`
+	Mode           string     `toml:"mode"` // "bot" (default) or "user"
+	TokenSource    string     `toml:"token_source"`
+	OpenClawConfig string     `toml:"openclaw_config"`
+	Account        string     `toml:"account"`
+	TokenEnv       string     `toml:"token_env"`
+	User           UserConfig `toml:"user"`
+}
+
+// UserConfig holds settings for user-token (self-bot) mode.
+type UserConfig struct {
+	ClientBuildNumber int    `toml:"client_build_number"`
+	BrowserVersion    string `toml:"browser_version"`
+	UserAgent         string `toml:"user_agent"`
+	Locale            string `toml:"locale"`
+	Proxy             string `toml:"proxy"`
+	MinRequestGapMs   int    `toml:"min_request_gap_ms"`
+	JitterMsMin       int    `toml:"jitter_ms_min"`
+	JitterMsMax       int    `toml:"jitter_ms_max"`
+	ReadOnlyStrict    *bool  `toml:"read_only_strict"`
 }
 
 type SyncConfig struct {
@@ -97,10 +112,12 @@ func Default() Config {
 		LogDir:         filepath.Join(base, "logs"),
 		DefaultGuildID: "",
 		Discord: DiscordConfig{
+			Mode:           "bot",
 			TokenSource:    "openclaw",
 			OpenClawConfig: filepath.Join(home, ".openclaw", "openclaw.json"),
 			Account:        "default",
 			TokenEnv:       DefaultTokenEnv,
+			User:           DefaultUserConfig(),
 		},
 		Sync: SyncConfig{
 			Concurrency:    defaultSyncConcurrency(),
@@ -119,6 +136,25 @@ func Default() Config {
 			},
 		},
 	}
+}
+
+// DefaultUserConfig returns sensible defaults for user-token mode.
+func DefaultUserConfig() UserConfig {
+	return UserConfig{
+		ClientBuildNumber: 525145,
+		BrowserVersion:    "146.0.0.0",
+		UserAgent:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+		Locale:            "it",
+		MinRequestGapMs:   1000,
+		JitterMsMin:       500,
+		JitterMsMax:       2000,
+		ReadOnlyStrict:    boolPtr(true),
+	}
+}
+
+// IsUserMode returns true if the config is set to user-token (self-bot) mode.
+func (c Config) IsUserMode() bool {
+	return c.Discord.Mode == "user"
 }
 
 func defaultSyncConcurrency() int {
@@ -200,6 +236,9 @@ func (c *Config) Normalize() error {
 			c.LogDir = def.LogDir
 		}
 	}
+	if c.Discord.Mode == "" {
+		c.Discord.Mode = "bot"
+	}
 	if c.Discord.TokenSource == "" {
 		c.Discord.TokenSource = "openclaw"
 	}
@@ -211,6 +250,31 @@ func (c *Config) Normalize() error {
 	}
 	if c.Discord.TokenEnv == "" {
 		c.Discord.TokenEnv = DefaultTokenEnv
+	}
+	defaults := DefaultUserConfig()
+	if c.Discord.User.ClientBuildNumber <= 0 {
+		c.Discord.User.ClientBuildNumber = defaults.ClientBuildNumber
+	}
+	if c.Discord.User.BrowserVersion == "" {
+		c.Discord.User.BrowserVersion = defaults.BrowserVersion
+	}
+	if c.Discord.User.UserAgent == "" {
+		c.Discord.User.UserAgent = defaults.UserAgent
+	}
+	if c.Discord.User.Locale == "" {
+		c.Discord.User.Locale = defaults.Locale
+	}
+	if c.Discord.User.MinRequestGapMs <= 0 {
+		c.Discord.User.MinRequestGapMs = defaults.MinRequestGapMs
+	}
+	if c.Discord.User.JitterMsMin <= 0 {
+		c.Discord.User.JitterMsMin = defaults.JitterMsMin
+	}
+	if c.Discord.User.JitterMsMax <= 0 {
+		c.Discord.User.JitterMsMax = defaults.JitterMsMax
+	}
+	if c.Discord.User.ReadOnlyStrict == nil {
+		c.Discord.User.ReadOnlyStrict = boolPtr(true)
 	}
 	if c.Sync.Concurrency <= 0 {
 		c.Sync.Concurrency = defaultSyncConcurrency()

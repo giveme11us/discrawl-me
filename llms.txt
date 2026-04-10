@@ -1,0 +1,293 @@
+# discrawl-me
+
+> Personal Discord archive tool with user-token auth, hybrid search, and MCP server for AI assistants.
+
+## Overview
+
+discrawl-me is a Go CLI that archives Discord servers and DMs into a local SQLite database using a user token (self-bot). It provides keyword search (FTS5), semantic search (embeddings), hybrid search (RRF fusion), and an MCP server that exposes the archive as tools for AI coding assistants like Claude Code.
+
+Fork of github.com/steipete/discrawl. Hard fork — no upstream sync.
+
+## Key concepts
+
+- **User-token mode**: authenticates as a regular Discord user (not a bot), enabling access to DMs and servers without installing a bot. Violates Discord ToS — use throwaway accounts.
+- **Read-only enforcement**: the HTTP transport layer blocks all non-GET requests. The Gateway client only sends heartbeat, identify, and resume opcodes. The tool never posts, reacts, or modifies anything on Discord.
+- **Hybrid search**: combines FTS5 keyword matching (BM25 scoring) with vector cosine similarity over message embeddings, merged via Reciprocal Rank Fusion (RRF, k=60).
+- **MCP server**: Model Context Protocol server over stdio, exposing 6 tools for searching and querying the archive from AI assistants.
+
+## Project structure
+
+```
+cmd/discrawl/main.go           Entry point
+cmd/testuser/main.go           Integration test against real Discord API
+
+internal/discord/
+  client.go                    Client interface (13 methods) + EventHandler interface (6 methods)
+                               + PrivateChannelLister interface + ReactionHandler interface
+  botclient/botclient.go       Bot-token implementation using discordgo library
+  userclient/
+    userclient.go              User-token implementation of discord.Client
+    transport.go               Custom HTTP transport: user-mode headers, rate limiter, read-only guard
+    gateway.go                 Custom WebSocket Gateway: identify, heartbeat, resume, event dispatch
+
+internal/config/config.go      TOML configuration with DiscordConfig.Mode ("bot"|"user"),
+                               UserConfig (super-properties, rate limits, proxy)
+
+internal/syncer/
+  syncer.go                    Sync orchestration, DM sync via PrivateChannelLister
+  channel_catalog.go           Channel discovery, thread crawling, DM channel types
+  message_sync.go              Message backfill with parallel workers
+  tail.go                      Live event handler (messages, channels, members, reactions, edits)
+  records.go                   Discord → store record conversion
+  errors.go                    403/404 tolerance for missing access
+
+internal/store/
+  store.go                     SQLite database, schema versions 1-3, migration logic
+  migrations.go                v1→v2 (edits, reactions), v2→v3 (embeddings)
+  write.go                     Insert/upsert for all record types
+  query.go                     FTS5 search, SQL queries, message retrieval
+  embeddings.go                Vector search, hybrid search (RRF), GetConversation, FindSimilar
+  reactions.go                 Reaction event CRUD
+  edits.go                     Message edit history CRUD
+
+internal/embedder/
+  provider.go                  Provider interface: Name(), Dim(), Embed(texts) → [][]float32
+  ollama.go                    Ollama provider (local, default: nomic-embed-text, 768d)
+  openai.go                    OpenAI provider (text-embedding-3-small, 1536d)
+  worker.go                    Consumes embedding_jobs table, stores vectors as float32 blobs
+
+internal/mcp/
+  server.go                    JSON-RPC 2.0 stdio server implementing MCP protocol
+  tools.go                     6 tool implementations backed by store queries
+```
+
+## Configuration
+
+Config file: TOML format, default path `~/.discrawl-me/config.toml`, override with `--config` flag or `DISCRAWL_CONFIG` env var.
+
+Key fields:
+- `discord.mode` = "user" or "bot" — selects userclient vs botclient
+- `discord.token_source` = "env" or "openclaw" — where to find the token
+- `discord.token_env` = env var name containing the token (default: DISCORD_USER_TOKEN for user mode, DISCORD_BOT_TOKEN for bot mode)
+- `discord.user.client_build_number` = Discord web client build number (must stay current, check Discord DevTools)
+- `discord.user.browser_version` = Chrome version string
+- `discord.user.min_request_gap_ms` = minimum ms between API requests (default: 1000)
+- `discord.user.read_only_strict` = true blocks all non-GET requests
+- `sync.concurrency` = parallel channel workers (keep at 1 for user mode)
+- `search.default_mode` = "fts", "vector", or "hybrid"
+- `search.embeddings.provider` = "ollama" or "openai"
+- `search.embeddings.model` = embedding model name
+
+## CLI commands
+
+```
+discrawl-me [--config PATH] [--json] [--quiet|-q] [--verbose|-v] COMMAND
+
+Commands:
+  init          Create config, discover guilds
+  sync          Backfill messages from Discord to SQLite
+    --full              Full history backfill
+    --all               All guilds (ignores default_guild_id)
+    --guild ID          Target specific guild
+    --guilds IDs        Comma-separated guild IDs
+    --channels IDs      Comma-separated channel IDs
+    --include-dms       Also archive DM channels (user mode only)
+    --concurrency N     Parallel workers
+    --since RFC3339     Only messages after this time
+    --with-embeddings   Enqueue messages for embedding
+
+  tail          Live Gateway event stream
+    --guild ID
+    --repair-every DUR  Periodic repair sync interval
+
+  search QUERY  Search archived messages
+    --mode fts|vector|hybrid
+    --guild ID
+    --channel ID_OR_NAME
+    --author ID_OR_NAME
+    --limit N
+
+  messages      List messages by channel/author/time
+  mentions      List structured mentions
+  members       Member directory (list, show, search)
+  channels      Channel listing
+  sql QUERY     Read-only SQL against the database
+  status        Archive status
+  doctor        Config/auth/DB health check
+
+  embed         Embedding management
+    run           Process all pending embedding jobs
+    status        Show backlog and completion stats
+
+  mcp           Start MCP server over stdio
+```
+
+## MCP server
+
+Launched via `discrawl-me mcp`. Implements MCP protocol version 2024-11-05 over stdio (line-delimited JSON-RPC 2.0).
+
+### Tools
+
+**search_messages** — Search Discord messages
+- query (string, required): search text
+- guild_id (string): filter by guild
+- channel_id (string): filter by channel ID or name
+- author (string): filter by author ID or name
+- mode (string): "fts" (default), "vector", "hybrid"
+- limit (integer): max results (default 20)
+
+**get_conversation** — Context window around a message
+- message_id (string, required): target message
+- before (integer): messages before (default 20)
+- after (integer): messages after (default 20)
+
+**list_guilds** — All archived guilds with channel/message counts
+
+**list_channels** — Channels in a guild
+- guild_id (string, required)
+
+**find_similar** — Semantically similar messages (requires embeddings)
+- message_id (string, required): source message
+- limit (integer): max results (default 10)
+
+**run_sql** — Read-only SQL query
+- query (string, required): SELECT or WITH statement only
+
+### Claude Code integration
+
+Add to `~/.claude.json`:
+```json
+{
+  "mcpServers": {
+    "discrawl-me": {
+      "type": "stdio",
+      "command": "/path/to/discrawl-me",
+      "args": ["--config", "/path/to/config.toml", "mcp"],
+      "env": { "DISCORD_USER_TOKEN": "token-here" }
+    }
+  }
+}
+```
+
+## Database schema
+
+SQLite with WAL mode. Schema version tracked via `PRAGMA user_version`.
+
+### Core tables (v1, from upstream)
+- guilds (id, name, icon, raw_json)
+- channels (id, guild_id, parent_id, kind, name, topic, position, flags...)
+- members (guild_id, user_id, username, display_name, nick, roles, raw_json)
+- messages (id, guild_id, channel_id, author_id, content, normalized_content, created_at, edited_at, deleted_at, raw_json)
+- message_events (event_id, guild_id, channel_id, message_id, event_type, payload_json)
+- message_attachments (attachment_id, message_id, filename, content_type, text_content)
+- mention_events (message_id, author_id, target_type, target_id)
+- sync_state (scope, cursor) — tracks per-channel sync progress
+- embedding_jobs (message_id, state, attempts) — queue for embedding pipeline
+- message_fts (FTS5 virtual table)
+- member_fts (FTS5 virtual table)
+
+### Fork additions (v2)
+- message_edits (message_id, edited_at, content, raw_json) — edit history snapshots
+- reaction_events (message_id, channel_id, guild_id, user_id, emoji_name, emoji_id, action, event_at)
+
+### Fork additions (v3)
+- message_embeddings (message_id, model, dim, vec BLOB, created_at) — float32 little-endian vectors
+
+### DM handling
+DM channels use guild_id = "@me" (synthetic). A fake guild record "Direct Messages" is created. Channel names are derived from recipient usernames.
+
+## Embedding pipeline
+
+1. During sync with `--with-embeddings`, messages are enqueued in `embedding_jobs` with state "pending"
+2. `embed run` command starts the worker which:
+   - Claims batches of pending jobs
+   - Sends text to the configured provider (Ollama or OpenAI)
+   - Stores resulting float32 vectors as BLOBs in `message_embeddings`
+   - Marks jobs as "done"
+3. Vector search loads all embeddings, computes cosine similarity in pure Go
+4. Hybrid search runs FTS5 (top 1000) + vector (top 1000) and merges via RRF
+
+Vectors are stored as raw float32 little-endian byte arrays. No external vector database — everything stays in SQLite.
+
+## Discord API details
+
+### User-token headers (transport.go)
+Every request includes:
+- Authorization: <token> (no "Bot " prefix)
+- User-Agent: real Chrome UA string
+- X-Super-Properties: base64-encoded JSON with os, browser, build_number, client_launch_id, etc.
+- X-Discord-Locale, X-Discord-Timezone, X-Debug-Options
+- Sec-Ch-Ua, Sec-Fetch-Dest/Mode/Site headers matching real Chrome
+
+### Gateway (gateway.go)
+- Connects to wss://gateway.discord.gg/?encoding=json&v=10 (no compression)
+- User-mode Identify (op 2) with capabilities=16381, properties (super-props), presence, client_state
+- Heartbeat loop from hello.heartbeat_interval
+- Resume with session_id + sequence on reconnect
+- Dispatches: MESSAGE_CREATE/UPDATE/DELETE, CHANNEL_CREATE/UPDATE, GUILD_MEMBER_ADD/UPDATE/REMOVE, MESSAGE_REACTION_ADD/REMOVE
+
+### Rate limiting
+- Minimum 1s between requests (configurable)
+- Random jitter 500ms-2000ms added
+- 429: read retry_after from response, sleep, retry once
+- 401: fatal stop (token invalid)
+- 403: logged and skipped (missing access to specific resource)
+
+## Building and testing
+
+```bash
+go build ./...                          # Must compile cleanly
+go test ./...                           # 11 packages must pass
+go build -o discrawl-me ./cmd/discrawl  # Produce binary
+```
+
+Integration test (requires real token):
+```bash
+DISCORD_USER_TOKEN=<token> go run ./cmd/testuser
+```
+
+Tests: Self, Guilds, PrivateChannels, GuildChannels, ChannelMessages, DM messages, Gateway (10s live connection).
+
+## Common tasks for agents
+
+### Syncing more data
+```bash
+# Sync all guilds the user is in
+DISCORD_USER_TOKEN=<token> discrawl-me --config <path> sync --all --include-dms
+
+# Sync specific channels (faster, avoids thread crawl)
+discrawl-me --config <path> sync --guild <id> --channels <ch1>,<ch2>
+```
+
+### Searching the archive
+```bash
+# Via CLI
+discrawl-me --config <path> search "keyword"
+discrawl-me --config <path> --json search "keyword"  # JSON output
+
+# Via MCP (from Claude Code)
+# Use the search_messages tool with query parameter
+# Use run_sql for complex queries
+```
+
+### Adding embeddings
+```bash
+# 1. Sync with embedding flag
+discrawl-me --config <path> sync --guild <id> --with-embeddings
+
+# 2. Ensure Ollama is running with model
+ollama pull nomic-embed-text
+
+# 3. Process embedding queue
+discrawl-me --config <path> embed run
+
+# 4. Now hybrid/vector search works
+discrawl-me --config <path> search --mode=hybrid "semantic query"
+```
+
+### Updating super-properties
+When Discord updates their web client, the `client_build_number` and `browser_version` in config may become stale. To update:
+1. Open Discord in browser, open DevTools Network tab
+2. Find any API request, copy the `X-Super-Properties` header value
+3. Base64-decode it to find current `client_build_number`
+4. Update `discord.user.client_build_number` in config.toml

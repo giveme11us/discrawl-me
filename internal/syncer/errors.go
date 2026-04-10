@@ -101,5 +101,7 @@ func isMissingAccess(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "403 Forbidden") || strings.Contains(msg, "Missing Access")
+	return strings.Contains(msg, "403 Forbidden") ||
+		strings.Contains(msg, "Missing Access") ||
+		strings.Contains(msg, "auth error 403")
 }

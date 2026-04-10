@@ -49,6 +49,7 @@ type SyncOptions struct {
 	Since        time.Time
 	Embeddings   bool
 	RepairReason string
+	IncludeDMs   bool
 }
 
 type SyncStats struct {
@@ -110,6 +111,15 @@ func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) 
 		stats.Threads += one.Threads
 		stats.Members += one.Members
 		stats.Messages += one.Messages
+	}
+	if opts.IncludeDMs {
+		dmStats, err := s.syncDMs(ctx, opts)
+		if err != nil {
+			s.logger.Warn("DM sync failed", "err", err)
+		} else {
+			stats.Channels += dmStats.Channels
+			stats.Messages += dmStats.Messages
+		}
 	}
 	if err := s.store.SetSyncState(ctx, "sync:last_success", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return stats, err
@@ -329,6 +339,80 @@ func (s *Syncer) shouldRefreshMembers(ctx context.Context, guildID string) bool 
 		return false
 	}
 	return true
+}
+
+// DMGuildID is the synthetic guild_id used for DM channels in the database.
+const DMGuildID = "@me"
+
+func (s *Syncer) syncDMs(ctx context.Context, opts SyncOptions) (SyncStats, error) {
+	lister, ok := s.client.(discordclient.PrivateChannelLister)
+	if !ok {
+		s.logger.Info("DM sync skipped: client does not support PrivateChannels")
+		return SyncStats{}, nil
+	}
+	dmChannels, err := lister.PrivateChannels(ctx)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("fetch private channels: %w", err)
+	}
+	if len(dmChannels) == 0 {
+		return SyncStats{}, nil
+	}
+	s.logger.Info("DM sync started", "channels", len(dmChannels))
+
+	// Upsert a synthetic guild record for DMs
+	if err := s.store.UpsertGuild(ctx, store.GuildRecord{
+		ID:      DMGuildID,
+		Name:    "Direct Messages",
+		RawJSON: `{"id":"@me","name":"Direct Messages"}`,
+	}); err != nil {
+		return SyncStats{}, err
+	}
+
+	stats := SyncStats{}
+	for _, ch := range dmChannels {
+		// Normalize DM channels: set guild_id to @me
+		ch.GuildID = DMGuildID
+		raw, _ := json.Marshal(ch)
+		record := toDMChannelRecord(ch, string(raw))
+		if err := s.store.UpsertChannel(ctx, record); err != nil {
+			return stats, err
+		}
+		stats.Channels++
+	}
+
+	// Sync messages from DM channels
+	messageCount, err := s.syncMessageChannels(ctx, DMGuildID, dmChannels, opts)
+	if err != nil {
+		return stats, err
+	}
+	stats.Messages += messageCount
+	s.logger.Info("DM sync completed", "channels", stats.Channels, "messages", stats.Messages)
+	return stats, nil
+}
+
+func toDMChannelRecord(ch *discordgo.Channel, raw string) store.ChannelRecord {
+	name := ch.Name
+	if name == "" && len(ch.Recipients) > 0 {
+		names := make([]string, 0, len(ch.Recipients))
+		for _, r := range ch.Recipients {
+			if r.GlobalName != "" {
+				names = append(names, r.GlobalName)
+			} else {
+				names = append(names, r.Username)
+			}
+		}
+		name = strings.Join(names, ", ")
+	}
+	if name == "" {
+		name = "DM " + ch.ID
+	}
+	return store.ChannelRecord{
+		ID:      ch.ID,
+		GuildID: DMGuildID,
+		Kind:    channelKind(ch),
+		Name:    name,
+		RawJSON: raw,
+	}
 }
 
 func guildMemberSyncSuccessScope(guildID string) string {
