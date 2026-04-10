@@ -175,10 +175,14 @@ func (t *transport) do(ctx context.Context, method, path string, body *strings.R
 		return nil, fmt.Errorf("rate limited on %s %s with no retry-after", method, path)
 	}
 
-	// Hard stop on auth failures
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	// Auth failures: 401 is fatal (token invalid), 403 is recoverable (missing access)
+	if resp.StatusCode == http.StatusUnauthorized {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("discord auth error %d on %s %s — token may be invalid or account suspended", resp.StatusCode, method, path)
+		return nil, fmt.Errorf("discord auth error 401 on %s %s — token is invalid or account suspended", method, path)
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("discord auth error 403 on %s %s — missing access to this resource", method, path)
 	}
 
 	return resp, nil
