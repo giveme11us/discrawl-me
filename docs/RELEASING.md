@@ -81,7 +81,7 @@ After tagging a real release:
 Useful commands:
 
 ```sh
-curl -L -o /tmp/discrawl-darwin-arm64.tgz https://github.com/steipete/discrawl/releases/download/vX.Y.Z/discrawl_X.Y.Z_darwin_arm64.tar.gz
+curl -L -o /tmp/discrawl-darwin-arm64.tgz https://github.com/giveme11us/discrawl-me/releases/download/vX.Y.Z/discrawl_X.Y.Z_darwin_arm64.tar.gz
 shasum -a 256 /tmp/discrawl-darwin-arm64.tgz
 brew uninstall discrawl || true
 brew install steipete/tap/discrawl
@@ -91,7 +91,7 @@ brew info steipete/tap/discrawl
 
 ## Notes
 
-- Build-time version stamping comes from `-X github.com/steipete/discrawl/internal/cli.version={{ .Version }}`
+- Build-time version stamping comes from `-X github.com/giveme11us/discrawl-me/internal/cli.version={{ .Version }}`
 - If release workflow needs a rerun:
 
 ```sh

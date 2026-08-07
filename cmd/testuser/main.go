@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/discord/userclient"
+	"github.com/giveme11us/discrawl-me/internal/config"
+	"github.com/giveme11us/discrawl-me/internal/discord/userclient"
 )
 
 func main() {

@@ -13,7 +13,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/steipete/discrawl/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 const (

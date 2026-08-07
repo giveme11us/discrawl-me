@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/steipete/discrawl/internal/embedder"
-	"github.com/steipete/discrawl/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/embedder"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 // ToolHandler handles MCP tool calls against the store.

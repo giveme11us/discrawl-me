@@ -2,7 +2,6 @@ package userclient
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,8 +10,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/giveme11us/discrawl-me/internal/config"
+	"github.com/giveme11us/discrawl-me/internal/discord"
 )
 
 // UserClient implements discord.Client using a user token (self-bot).
@@ -229,5 +228,9 @@ func (c *UserClient) getJSON(ctx context.Context, path string, dest any) error {
 		return fmt.Errorf("discord API error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	return json.NewDecoder(resp.Body).Decode(dest)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	return decodeDiscordJSON(data, dest)
 }

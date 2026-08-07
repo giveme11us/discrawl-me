@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/config"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 func TestMessageSyncOptionsNumericChannelID(t *testing.T) {

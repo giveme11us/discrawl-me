@@ -1,4 +1,4 @@
-module github.com/steipete/discrawl
+module github.com/giveme11us/discrawl-me
 
 go 1.26.1
 

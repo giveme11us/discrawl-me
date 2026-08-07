@@ -46,3 +46,8 @@ dist/
 .idea/
 .vscode/
 discrawl-me
+
+# Personal runtime launchers and one-off dependency experiments
+/discrawl-mcp.sh
+/local_patches/
+/patches/

@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/bwmarrin/discordgo"
+	"github.com/giveme11us/discrawl-me/internal/config"
+	"github.com/giveme11us/discrawl-me/internal/discord"
 	"github.com/stretchr/testify/require"
 )
 
@@ -134,6 +135,18 @@ func TestUserClientChannelMessages(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	require.Equal(t, "hello", msgs[0].Content)
+}
+
+func TestDecodeDiscordJSONDropsUnknownComponents(t *testing.T) {
+	payload := []byte(`{
+		"id":"m1","channel_id":"c1","content":"hello",
+		"author":{"id":"u1","username":"user"},
+		"components":[{"type":20,"future_field":"value"},{"type":2,"label":"keep"}]
+	}`)
+	var message discordgo.Message
+	require.NoError(t, decodeDiscordJSON(payload, &message))
+	require.Len(t, message.Components, 1)
+	require.Equal(t, discordgo.ButtonComponent, message.Components[0].Type())
 }
 
 func TestUserClientPrivateChannels(t *testing.T) {

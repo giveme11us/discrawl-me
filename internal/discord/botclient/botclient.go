@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/giveme11us/discrawl-me/internal/discord"
 )
 
 // BotClient implements discord.Client using a Discord bot token via discordgo.

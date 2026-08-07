@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	discordclient "github.com/steipete/discrawl/internal/discord"
-	"github.com/steipete/discrawl/internal/store"
+	discordclient "github.com/giveme11us/discrawl-me/internal/discord"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 type Client interface {

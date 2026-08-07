@@ -11,7 +11,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/require"
 
-	"github.com/steipete/discrawl/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 func TestNormalizeMessageIncludesRichFields(t *testing.T) {

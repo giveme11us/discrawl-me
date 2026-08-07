@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steipete/discrawl/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/store"
 	"github.com/stretchr/testify/require"
 )
 

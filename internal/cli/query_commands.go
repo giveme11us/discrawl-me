@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/steipete/discrawl/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 func (r *runtime) runSearch(args []string) error {

@@ -11,8 +11,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/stretchr/testify/require"
 
-	discordclient "github.com/steipete/discrawl/internal/discord"
-	"github.com/steipete/discrawl/internal/store"
+	discordclient "github.com/giveme11us/discrawl-me/internal/discord"
+	"github.com/giveme11us/discrawl-me/internal/store"
 )
 
 type fakeClient struct {

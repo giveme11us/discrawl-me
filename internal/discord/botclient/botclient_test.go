@@ -13,7 +13,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/giveme11us/discrawl-me/internal/discord"
 	"github.com/stretchr/testify/require"
 )
 

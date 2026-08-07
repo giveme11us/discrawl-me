@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/steipete/discrawl/internal/syncer"
+	"github.com/giveme11us/discrawl-me/internal/syncer"
 )
 
 func (r *runtime) syncMessagesQuery(channel, guild, guilds string, since time.Time) error {

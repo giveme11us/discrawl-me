@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/steipete/discrawl/internal/config"
-	"github.com/steipete/discrawl/internal/discord/botclient"
-	"github.com/steipete/discrawl/internal/discord/userclient"
-	"github.com/steipete/discrawl/internal/store"
-	"github.com/steipete/discrawl/internal/syncer"
+	"github.com/giveme11us/discrawl-me/internal/config"
+	"github.com/giveme11us/discrawl-me/internal/discord/botclient"
+	"github.com/giveme11us/discrawl-me/internal/discord/userclient"
+	"github.com/giveme11us/discrawl-me/internal/store"
+	"github.com/giveme11us/discrawl-me/internal/syncer"
 )
 
 type cliError struct {

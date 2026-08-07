@@ -11,7 +11,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
-	"github.com/steipete/discrawl/internal/discord"
+	"github.com/giveme11us/discrawl-me/internal/discord"
 )
 
 const (
@@ -257,14 +257,14 @@ func (g *Gateway) dispatchEvent(ctx context.Context, p gatewayPayload) error {
 
 	case "MESSAGE_CREATE":
 		var evt discordgo.MessageCreate
-		if err := json.Unmarshal(p.Data, &evt); err != nil {
+		if err := decodeDiscordJSON(p.Data, &evt); err != nil {
 			return nil
 		}
 		return g.handler.OnMessageCreate(ctx, evt.Message)
 
 	case "MESSAGE_UPDATE":
 		var evt discordgo.MessageUpdate
-		if err := json.Unmarshal(p.Data, &evt); err != nil {
+		if err := decodeDiscordJSON(p.Data, &evt); err != nil {
 			return nil
 		}
 		return g.handler.OnMessageUpdate(ctx, evt.Message)
