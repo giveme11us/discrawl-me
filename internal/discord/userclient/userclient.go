@@ -39,7 +39,6 @@ func New(token string, cfg config.UserConfig) (*UserClient, error) {
 		minGap:            time.Duration(cfg.MinRequestGapMs) * time.Millisecond,
 		jitterMin:         time.Duration(cfg.JitterMsMin) * time.Millisecond,
 		jitterMax:         time.Duration(cfg.JitterMsMax) * time.Millisecond,
-		readOnlyStrict:    cfg.ReadOnlyStrict == nil || *cfg.ReadOnlyStrict,
 		proxy:             cfg.Proxy,
 	}
 	return &UserClient{
@@ -49,7 +48,7 @@ func New(token string, cfg config.UserConfig) (*UserClient, error) {
 }
 
 func (c *UserClient) Close() error {
-	return nil
+	return c.gateway.Close()
 }
 
 func (c *UserClient) Self(ctx context.Context) (*discordgo.User, error) {

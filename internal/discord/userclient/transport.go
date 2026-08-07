@@ -2,11 +2,11 @@ package userclient
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	cryptorand "crypto/rand"
-	"encoding/hex"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -19,26 +19,26 @@ const discordAPIBase = "https://discord.com/api/v10"
 // superProperties is the X-Super-Properties JSON payload that mimics a real
 // Discord web client. Fields must stay in sync with what the client sends.
 type superProperties struct {
-	OS                        string `json:"os"`
-	Browser                   string `json:"browser"`
-	Device                    string `json:"device"`
-	SystemLocale              string `json:"system_locale"`
-	HasClientMods             bool   `json:"has_client_mods"`
-	BrowserUserAgent          string `json:"browser_user_agent"`
-	BrowserVersion            string `json:"browser_version"`
-	OSVersion                 string `json:"os_version"`
-	Referrer                  string `json:"referrer"`
-	ReferringDomain           string `json:"referring_domain"`
-	SearchEngine              string `json:"search_engine"`
-	ReferrerCurrent           string `json:"referrer_current"`
-	ReferringDomainCurrent    string `json:"referring_domain_current"`
-	ReleaseChannel            string `json:"release_channel"`
-	ClientBuildNumber         int    `json:"client_build_number"`
-	ClientEventSource         *int   `json:"client_event_source"`
-	ClientLaunchID            string `json:"client_launch_id"`
-	LaunchSignature           string `json:"launch_signature"`
-	ClientHeartbeatSessionID  string `json:"client_heartbeat_session_id"`
-	ClientAppState            string `json:"client_app_state"`
+	OS                       string `json:"os"`
+	Browser                  string `json:"browser"`
+	Device                   string `json:"device"`
+	SystemLocale             string `json:"system_locale"`
+	HasClientMods            bool   `json:"has_client_mods"`
+	BrowserUserAgent         string `json:"browser_user_agent"`
+	BrowserVersion           string `json:"browser_version"`
+	OSVersion                string `json:"os_version"`
+	Referrer                 string `json:"referrer"`
+	ReferringDomain          string `json:"referring_domain"`
+	SearchEngine             string `json:"search_engine"`
+	ReferrerCurrent          string `json:"referrer_current"`
+	ReferringDomainCurrent   string `json:"referring_domain_current"`
+	ReleaseChannel           string `json:"release_channel"`
+	ClientBuildNumber        int    `json:"client_build_number"`
+	ClientEventSource        *int   `json:"client_event_source"`
+	ClientLaunchID           string `json:"client_launch_id"`
+	LaunchSignature          string `json:"launch_signature"`
+	ClientHeartbeatSessionID string `json:"client_heartbeat_session_id"`
+	ClientAppState           string `json:"client_app_state"`
 }
 
 // transportConfig holds the immutable configuration for the HTTP transport.
@@ -50,7 +50,6 @@ type transportConfig struct {
 	minGap            time.Duration
 	jitterMin         time.Duration
 	jitterMax         time.Duration
-	readOnlyStrict    bool
 	proxy             string
 }
 
@@ -60,8 +59,8 @@ type transport struct {
 	cfg    transportConfig
 	client *http.Client
 
-	mu       sync.Mutex
-	lastReq  time.Time
+	mu      sync.Mutex
+	lastReq time.Time
 }
 
 func newTransport(cfg transportConfig) *transport {
@@ -115,7 +114,7 @@ func generateUUID() string {
 
 // do executes an HTTP request with all user-mode headers and rate limiting.
 func (t *transport) do(ctx context.Context, method, path string, body *strings.Reader) (*http.Response, error) {
-	if t.cfg.readOnlyStrict && method != "GET" {
+	if method != http.MethodGet {
 		return nil, fmt.Errorf("discrawl-me: read-only mode blocks %s %s", method, path)
 	}
 

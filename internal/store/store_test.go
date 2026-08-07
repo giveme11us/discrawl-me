@@ -422,10 +422,8 @@ func TestEventsSyncStateAndHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, rows)
 
-	cols, rows, err := s.ReadOnlyQuery(ctx, "pragma foreign_keys")
-	require.NoError(t, err)
-	require.NotEmpty(t, cols)
-	require.NotEmpty(t, rows)
+	_, _, err = s.ReadOnlyQuery(ctx, "pragma foreign_keys")
+	require.Error(t, err)
 
 	require.Equal(t, "1", stringify(int64(1)))
 	require.Equal(t, "value", stringify("value"))
@@ -446,6 +444,8 @@ func TestEventsSyncStateAndHelpers(t *testing.T) {
 	require.Equal(t, "maintainers", normalizeChannelFilter(" maintainers "))
 	require.True(t, IsReadOnlySQL("select 1"))
 	require.True(t, IsReadOnlySQL("-- comment\nselect 1"))
+	require.True(t, IsReadOnlySQL("with answer as (select 1) select * from answer"))
+	require.False(t, IsReadOnlySQL("pragma foreign_keys"))
 	require.False(t, IsReadOnlySQL("delete from messages"))
 }
 

@@ -24,11 +24,8 @@ func testConfig() config.UserConfig {
 		MinRequestGapMs:   1, // fast for tests
 		JitterMsMin:       0,
 		JitterMsMax:       1,
-		ReadOnlyStrict:    boolPtr(true),
 	}
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 // testClient creates a UserClient pointed at a test server.
 func testClient(t *testing.T, handler http.Handler) *UserClient {
@@ -154,7 +151,6 @@ func TestUserClientPrivateChannels(t *testing.T) {
 
 func TestUserClientReadOnlyGuard(t *testing.T) {
 	cfg := testConfig()
-	cfg.ReadOnlyStrict = boolPtr(true)
 	client, err := New("token", cfg)
 	require.NoError(t, err)
 
@@ -162,29 +158,6 @@ func TestUserClientReadOnlyGuard(t *testing.T) {
 	_, err = client.transport.do(context.Background(), "POST", "/test", strings.NewReader("{}"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "read-only mode")
-}
-
-func TestUserClientReadOnlyDisabled(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v10/test", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"ok": true})
-	})
-
-	cfg := testConfig()
-	cfg.ReadOnlyStrict = boolPtr(false)
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	client, err := New("token", cfg)
-	require.NoError(t, err)
-	client.transport.client = &http.Client{
-		Transport: &rewriteTransport{base: server.URL},
-	}
-
-	resp, err := client.transport.do(context.Background(), "POST", "/test", strings.NewReader("{}"))
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	_ = resp.Body.Close()
 }
 
 func TestUserClient429Retry(t *testing.T) {

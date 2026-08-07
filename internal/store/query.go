@@ -517,7 +517,7 @@ func searchCandidateLimit(limit int) int {
 
 func IsReadOnlySQL(query string) bool {
 	switch leadingSQLKeyword(query) {
-	case "select", "explain", "pragma":
+	case "select", "with", "explain":
 		return true
 	default:
 		return false

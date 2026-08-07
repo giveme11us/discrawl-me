@@ -175,7 +175,6 @@ locale = "it"
 min_request_gap_ms = 1000        # Conservative rate limit
 jitter_ms_min = 500
 jitter_ms_max = 2000
-read_only_strict = true          # Block all writes at transport layer
 
 [sync]
 concurrency = 1                  # Keep low for user mode

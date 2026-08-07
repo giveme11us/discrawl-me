@@ -50,7 +50,6 @@ type UserConfig struct {
 	MinRequestGapMs   int    `toml:"min_request_gap_ms"`
 	JitterMsMin       int    `toml:"jitter_ms_min"`
 	JitterMsMax       int    `toml:"jitter_ms_max"`
-	ReadOnlyStrict    *bool  `toml:"read_only_strict"`
 }
 
 type SyncConfig struct {
@@ -69,6 +68,7 @@ type EmbeddingsConfig struct {
 	Enabled   bool   `toml:"enabled"`
 	Provider  string `toml:"provider"`
 	Model     string `toml:"model"`
+	Endpoint  string `toml:"endpoint"`
 	APIKeyEnv string `toml:"api_key_env"`
 	BatchSize int    `toml:"batch_size"`
 }
@@ -148,7 +148,6 @@ func DefaultUserConfig() UserConfig {
 		MinRequestGapMs:   1000,
 		JitterMsMin:       500,
 		JitterMsMax:       2000,
-		ReadOnlyStrict:    boolPtr(true),
 	}
 }
 
@@ -272,9 +271,6 @@ func (c *Config) Normalize() error {
 	}
 	if c.Discord.User.JitterMsMax <= 0 {
 		c.Discord.User.JitterMsMax = defaults.JitterMsMax
-	}
-	if c.Discord.User.ReadOnlyStrict == nil {
-		c.Discord.User.ReadOnlyStrict = boolPtr(true)
 	}
 	if c.Sync.Concurrency <= 0 {
 		c.Sync.Concurrency = defaultSyncConcurrency()

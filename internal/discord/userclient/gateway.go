@@ -78,13 +78,26 @@ type Gateway struct {
 	superProps string // base64 encoded, same as REST
 	logger     *slog.Logger
 
-	conn      *websocket.Conn
-	mu        sync.Mutex // protects writes to conn
-	seq       int64
-	sessionID string
-	resumeURL string
+	conn         *websocket.Conn
+	mu           sync.Mutex // protects writes to conn
+	heartbeatACK bool
+	seq          int64
+	sessionID    string
+	resumeURL    string
 
 	handler discord.EventHandler
+}
+
+// Close terminates the active Gateway connection, if any.
+func (g *Gateway) Close() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.conn == nil {
+		return nil
+	}
+	err := g.conn.Close()
+	g.conn = nil
+	return err
 }
 
 // NewGateway creates a Gateway client for user-token mode.
@@ -139,10 +152,17 @@ func (g *Gateway) session(ctx context.Context, url string) error {
 	if err != nil {
 		return fmt.Errorf("dial gateway: %w", err)
 	}
+	g.mu.Lock()
 	g.conn = conn
+	g.heartbeatACK = true
+	g.mu.Unlock()
 	defer func() {
 		_ = conn.Close()
-		g.conn = nil
+		g.mu.Lock()
+		if g.conn == conn {
+			g.conn = nil
+		}
+		g.mu.Unlock()
 	}()
 
 	// Read HELLO (op 10).
@@ -210,6 +230,9 @@ func (g *Gateway) handlePayload(ctx context.Context, conn *websocket.Conn, p gat
 		}
 		return fmt.Errorf("invalid session (resumable=%v)", resumable)
 	case opHeartbeatACK:
+		g.mu.Lock()
+		g.heartbeatACK = true
+		g.mu.Unlock()
 		return nil
 	default:
 		return nil
@@ -225,7 +248,7 @@ func (g *Gateway) dispatchEvent(ctx context.Context, p gatewayPayload) error {
 		}
 		g.sessionID = ready.SessionID
 		g.resumeURL = ready.ResumeGatewayURL
-		g.logger.Info("gateway READY", "session_id", g.sessionID)
+		g.logger.Info("gateway READY")
 		return nil
 
 	case "RESUMED":
@@ -383,6 +406,7 @@ func (g *Gateway) sendHeartbeat(conn *websocket.Conn) error {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.heartbeatACK = false
 	return conn.WriteJSON(payload)
 }
 
@@ -394,6 +418,14 @@ func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn, inter
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			g.mu.Lock()
+			acked := g.heartbeatACK
+			g.mu.Unlock()
+			if !acked {
+				g.logger.Warn("heartbeat ACK missed; reconnecting")
+				_ = conn.Close()
+				return
+			}
 			if err := g.sendHeartbeat(conn); err != nil {
 				g.logger.Warn("heartbeat send failed", "err", err)
 				return
