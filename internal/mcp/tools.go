@@ -6,17 +6,23 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/steipete/discrawl/internal/embedder"
 	"github.com/steipete/discrawl/internal/store"
 )
 
 // ToolHandler handles MCP tool calls against the store.
 type ToolHandler struct {
-	store *store.Store
+	store    *store.Store
+	embedder embedder.Provider
 }
 
 // NewToolHandler creates a tool handler backed by the given store.
-func NewToolHandler(s *store.Store) *ToolHandler {
-	return &ToolHandler{store: s}
+func NewToolHandler(s *store.Store, providers ...embedder.Provider) *ToolHandler {
+	var provider embedder.Provider
+	if len(providers) > 0 {
+		provider = providers[0]
+	}
+	return &ToolHandler{store: s, embedder: provider}
 }
 
 // ListTools returns the MCP tool definitions.
@@ -149,10 +155,28 @@ func (h *ToolHandler) searchMessages(ctx context.Context, args json.RawMessage) 
 	var results []store.SearchResult
 	var err error
 	switch params.Mode {
+	case "vector", "hybrid":
+		if h.embedder == nil {
+			return "", fmt.Errorf("%s search requires an enabled embedding provider", params.Mode)
+		}
+		vectors, embedErr := h.embedder.Embed(ctx, []string{params.Query})
+		if embedErr != nil {
+			return "", fmt.Errorf("embed search query: %w", embedErr)
+		}
+		if len(vectors) != 1 || len(vectors[0]) != h.embedder.Dim() {
+			return "", fmt.Errorf("embedding provider returned an invalid query vector")
+		}
+		opts.QueryVec = vectors[0]
+	}
+	switch params.Mode {
 	case "hybrid":
 		results, err = h.store.HybridSearch(ctx, opts)
-	default:
+	case "vector":
+		results, err = h.store.VectorSearchWithOptions(ctx, opts)
+	case "fts":
 		results, err = h.store.SearchMessages(ctx, opts)
+	default:
+		return "", fmt.Errorf("unknown search mode %q", params.Mode)
 	}
 	if err != nil {
 		return "", err

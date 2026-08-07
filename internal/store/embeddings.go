@@ -1,67 +1,87 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"encoding/binary"
 	"math"
+	"strings"
 )
 
 // VectorSearch finds messages by cosine similarity to a query vector.
 func (s *Store) VectorSearch(ctx context.Context, queryVec []float32, limit int) ([]SearchResult, error) {
-	if limit <= 0 {
-		limit = 20
+	return s.VectorSearchWithOptions(ctx, SearchOptions{QueryVec: queryVec, Limit: limit})
+}
+
+// VectorSearchWithOptions finds the top-k messages by cosine similarity while
+// retaining only k candidates in memory.
+func (s *Store) VectorSearchWithOptions(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 20
 	}
-	// Load all embeddings — feasible for personal archives (< 1M messages)
-	rows, err := s.db.QueryContext(ctx, `
+	if len(opts.QueryVec) == 0 {
+		return nil, nil
+	}
+	clauses := []string{"me.dim = ?"}
+	args := []any{len(opts.QueryVec)}
+	if len(opts.GuildIDs) > 0 {
+		clauses = append(clauses, "m.guild_id in ("+placeholders(len(opts.GuildIDs))+")")
+		for _, guildID := range opts.GuildIDs {
+			args = append(args, guildID)
+		}
+	}
+	if strings.TrimSpace(opts.Channel) != "" {
+		clauses = append(clauses, "(m.channel_id = ? or c.name like ?)")
+		args = append(args, opts.Channel, "%"+opts.Channel+"%")
+	}
+	if strings.TrimSpace(opts.Author) != "" {
+		clauses = append(clauses, "(m.author_id = ? or m.raw_json like ?)")
+		args = append(args, opts.Author, "%"+opts.Author+"%")
+	}
+	query := `
 		select me.message_id, me.vec,
 			m.guild_id, m.channel_id, coalesce(c.name, ''),
-			coalesce(m.author_id, ''), coalesce(m.content, m.normalized_content),
+			coalesce(m.author_id, ''), '',
+			coalesce(m.content, m.normalized_content),
 			m.created_at
 		from message_embeddings me
 		join messages m on m.id = me.message_id
 		left join channels c on c.id = m.channel_id
-	`)
+		where ` + strings.Join(clauses, " and ")
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	type scoredResult struct {
-		result SearchResult
-		score  float64
-	}
-	var candidates []scoredResult
+	candidates := &scoredResultHeap{}
+	heap.Init(candidates)
 	for rows.Next() {
 		var r SearchResult
 		var vecBlob []byte
 		var created string
 		if err := rows.Scan(&r.MessageID, &vecBlob, &r.GuildID, &r.ChannelID, &r.ChannelName,
-			&r.AuthorID, &r.Content, &created); err != nil {
+			&r.AuthorID, &r.AuthorName, &r.Content, &created); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = parseTime(created)
 		vec := bytesToFloat32(vecBlob)
-		sim := cosineSimilarity(queryVec, vec)
-		candidates = append(candidates, scoredResult{result: r, score: sim})
+		sim := cosineSimilarity(opts.QueryVec, vec)
+		candidate := scoredResult{result: r, score: sim}
+		if candidates.Len() < opts.Limit {
+			heap.Push(candidates, candidate)
+		} else if sim > (*candidates)[0].score {
+			(*candidates)[0] = candidate
+			heap.Fix(candidates, 0)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Sort by score descending (insertion sort, fine for < 1000 items)
-	for i := 1; i < len(candidates); i++ {
-		j := i
-		for j > 0 && candidates[j].score > candidates[j-1].score {
-			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
-			j--
-		}
-	}
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-
-	results := make([]SearchResult, len(candidates))
-	for i, c := range candidates {
+	results := make([]SearchResult, candidates.Len())
+	for i := len(results) - 1; i >= 0; i-- {
+		c := heap.Pop(candidates).(scoredResult)
 		c.result.Score = c.score
 		results[i] = c.result
 	}
@@ -85,7 +105,9 @@ func (s *Store) HybridSearch(ctx context.Context, opts SearchOptions) ([]SearchR
 	// Vector results (semantic match)
 	var vecResults []SearchResult
 	if len(opts.QueryVec) > 0 {
-		vecResults, err = s.VectorSearch(ctx, opts.QueryVec, 1000)
+		vectorOpts := opts
+		vectorOpts.Limit = 1000
+		vecResults, err = s.VectorSearchWithOptions(ctx, vectorOpts)
 		if err != nil {
 			return nil, err
 		}
@@ -98,6 +120,24 @@ func (s *Store) HybridSearch(ctx context.Context, opts SearchOptions) ([]SearchR
 		merged = merged[:opts.Limit]
 	}
 	return merged, nil
+}
+
+type scoredResult struct {
+	result SearchResult
+	score  float64
+}
+
+type scoredResultHeap []scoredResult
+
+func (h scoredResultHeap) Len() int           { return len(h) }
+func (h scoredResultHeap) Less(i, j int) bool { return h[i].score < h[j].score }
+func (h scoredResultHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *scoredResultHeap) Push(value any)    { *h = append(*h, value.(scoredResult)) }
+func (h *scoredResultHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
 }
 
 // GetConversation returns messages around a target message.
@@ -250,4 +290,3 @@ func bytesToFloat32(b []byte) []float32 {
 	}
 	return vec
 }
-

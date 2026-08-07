@@ -12,6 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type queryEmbeddingProvider struct {
+	calls int
+}
+
+func (p *queryEmbeddingProvider) Name() string { return "test" }
+func (p *queryEmbeddingProvider) Dim() int     { return 3 }
+func (p *queryEmbeddingProvider) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	p.calls++
+	return [][]float32{{1, 0, 0}}, nil
+}
+
 func setupTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	ctx := context.Background()
@@ -25,7 +36,7 @@ func setupTestStore(t *testing.T) *store.Store {
 		ID: "m1", GuildID: "g1", ChannelID: "c1", ChannelName: "general",
 		AuthorID: "u1", AuthorName: "User", MessageType: 0,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Content: "hello world test message", NormalizedContent: "hello world test message",
+		Content:   "hello world test message", NormalizedContent: "hello world test message",
 		RawJSON: "{}",
 	}))
 	return s
@@ -101,6 +112,34 @@ func TestMCPSearchMessages(t *testing.T) {
 
 	result, _ := json.Marshal(resp.Result)
 	require.Contains(t, string(result), "hello world")
+}
+
+func TestMCPHybridSearchEmbedsQuery(t *testing.T) {
+	s := setupTestStore(t)
+	provider := &queryEmbeddingProvider{}
+	tools := NewToolHandler(s, provider)
+	server := NewServer(tools, nil)
+
+	resp := sendRequest(t, server, "tools/call", map[string]any{
+		"name":      "search_messages",
+		"arguments": map[string]any{"query": "hello", "mode": "hybrid"},
+	})
+	require.Nil(t, resp.Error)
+	require.Equal(t, 1, provider.calls)
+	result, _ := json.Marshal(resp.Result)
+	require.Contains(t, string(result), "hello world")
+}
+
+func TestMCPVectorSearchRequiresProvider(t *testing.T) {
+	s := setupTestStore(t)
+	server := NewServer(NewToolHandler(s), nil)
+	resp := sendRequest(t, server, "tools/call", map[string]any{
+		"name":      "search_messages",
+		"arguments": map[string]any{"query": "hello", "mode": "vector"},
+	})
+	require.Nil(t, resp.Error)
+	result, _ := json.Marshal(resp.Result)
+	require.Contains(t, string(result), "isError")
 }
 
 func TestMCPListGuilds(t *testing.T) {

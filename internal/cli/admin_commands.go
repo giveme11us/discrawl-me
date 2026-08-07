@@ -215,7 +215,12 @@ func (r *runtime) runEmbed(args []string) error {
 }
 
 func (r *runtime) runMCP(_ []string) error {
-	tools := mcp.NewToolHandler(r.store)
+	var tools *mcp.ToolHandler
+	if r.cfg.Search.Embeddings.Enabled {
+		tools = mcp.NewToolHandler(r.store, r.createEmbedProvider())
+	} else {
+		tools = mcp.NewToolHandler(r.store)
+	}
 	server := mcp.NewServer(tools, r.logger)
 	return server.Run(r.ctx, os.Stdin, r.stdout)
 }
