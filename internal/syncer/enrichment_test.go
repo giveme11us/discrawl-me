@@ -44,7 +44,7 @@ func TestBuildMessageMutationIncludesAttachmentTextAndMentions(t *testing.T) {
 			GlobalName: "Shadow",
 		}},
 		MentionRoles: []string{"r1"},
-	}, "maintainers", false, true)
+	}, "g1", "maintainers", false, true)
 	require.NoError(t, err)
 	require.Len(t, mutation.Attachments, 1)
 	require.Equal(t, "trace.txt", mutation.Attachments[0].Filename)
@@ -93,7 +93,7 @@ func TestBuildMessageMutationSkipsBinaryResponseEvenWhenAttachmentLooksTextual(t
 			Filename: "trace.txt",
 			URL:      server.URL,
 		}},
-	}, "maintainers", false, true)
+	}, "g1", "maintainers", false, true)
 	require.NoError(t, err)
 	require.Len(t, mutation.Attachments, 1)
 	require.Empty(t, mutation.Attachments[0].TextContent)
@@ -127,7 +127,7 @@ func TestBuildMessageMutationSkipsOversizedAttachmentResponses(t *testing.T) {
 			ContentType: "text/plain",
 			URL:         server.URL,
 		}},
-	}, "maintainers", false, true)
+	}, "g1", "maintainers", false, true)
 	require.NoError(t, err)
 	require.Len(t, mutation.Attachments, 1)
 	require.Empty(t, mutation.Attachments[0].TextContent)
@@ -159,7 +159,7 @@ func TestBuildMessageMutationRespectsAttachmentTextOptOut(t *testing.T) {
 			ContentType: "text/plain",
 			URL:         server.URL,
 		}},
-	}, "maintainers", false, false)
+	}, "g1", "maintainers", false, false)
 	require.NoError(t, err)
 	require.Len(t, mutation.Attachments, 1)
 	require.Empty(t, mutation.Attachments[0].TextContent)

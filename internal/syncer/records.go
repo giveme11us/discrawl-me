@@ -29,7 +29,7 @@ func toMemberRecord(guildID string, member *discordgo.Member) store.MemberRecord
 	}
 }
 
-func toMessageRecord(message *discordgo.Message, channelName, normalizedContent string) store.MessageRecord {
+func toMessageRecord(message *discordgo.Message, guildID, channelName, normalizedContent string) store.MessageRecord {
 	raw, _ := json.Marshal(message)
 	authorID := ""
 	authorName := ""
@@ -48,9 +48,13 @@ func toMessageRecord(message *discordgo.Message, channelName, normalizedContent 
 	if message.EditedTimestamp != nil {
 		editedAt = message.EditedTimestamp.UTC().Format(time.RFC3339Nano)
 	}
+	effectiveGuildID := message.GuildID
+	if effectiveGuildID == "" {
+		effectiveGuildID = guildID
+	}
 	return store.MessageRecord{
 		ID:                message.ID,
-		GuildID:           message.GuildID,
+		GuildID:           effectiveGuildID,
 		ChannelID:         message.ChannelID,
 		ChannelName:       channelName,
 		AuthorID:          authorID,

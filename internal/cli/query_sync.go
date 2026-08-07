@@ -4,15 +4,16 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/steipete/discrawl/internal/syncer"
 )
 
-func (r *runtime) syncMessagesQuery(channel, guild, guilds string) error {
+func (r *runtime) syncMessagesQuery(channel, guild, guilds string, since time.Time) error {
 	if r.syncer == nil {
 		return usageErr(fmt.Errorf("messages --sync requires Discord access"))
 	}
-	opts, err := r.messageSyncOptions(channel, guild, guilds)
+	opts, err := r.messageSyncOptions(channel, guild, guilds, since)
 	if err != nil {
 		return usageErr(err)
 	}
@@ -20,11 +21,12 @@ func (r *runtime) syncMessagesQuery(channel, guild, guilds string) error {
 	return err
 }
 
-func (r *runtime) messageSyncOptions(channel, guild, guilds string) (syncer.SyncOptions, error) {
+func (r *runtime) messageSyncOptions(channel, guild, guilds string, since time.Time) (syncer.SyncOptions, error) {
 	requestedGuilds := r.resolveSyncGuilds(guild, guilds)
 	opts := syncer.SyncOptions{
 		GuildIDs:    requestedGuilds,
 		Concurrency: r.cfg.Sync.Concurrency,
+		Since:       since,
 	}
 
 	channelFilter := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(channel), "#"))

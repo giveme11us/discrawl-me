@@ -667,6 +667,14 @@ func TestSyncSkipsRetryableChannelErrors(t *testing.T) {
 	stats, err := svc.Sync(ctx, SyncOptions{Full: true, Concurrency: 2})
 	require.NoError(t, err)
 	require.Equal(t, 1, stats.Messages)
+	require.Equal(t, 1, stats.DeferredChannels)
+
+	lastSuccess, err := s.GetSyncState(ctx, "sync:last_success")
+	require.NoError(t, err)
+	require.Empty(t, lastSuccess)
+	lastPartial, err := s.GetSyncState(ctx, "sync:last_partial")
+	require.NoError(t, err)
+	require.NotEmpty(t, lastPartial)
 
 	cursor, err := s.GetSyncState(ctx, "channel:c2:latest_message_id")
 	require.NoError(t, err)

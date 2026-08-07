@@ -53,18 +53,19 @@ type SyncOptions struct {
 }
 
 type SyncStats struct {
-	Guilds   int `json:"guilds"`
-	Channels int `json:"channels"`
-	Threads  int `json:"threads"`
-	Members  int `json:"members"`
-	Messages int `json:"messages"`
+	Guilds           int `json:"guilds"`
+	Channels         int `json:"channels"`
+	Threads          int `json:"threads"`
+	Members          int `json:"members"`
+	Messages         int `json:"messages"`
+	DeferredChannels int `json:"deferred_channels"`
 }
 
 const (
 	fullSyncBatchSize            = 25
 	defaultMemberRefreshTimeout  = 5 * time.Minute
 	defaultMemberRefreshInterval = 24 * time.Hour
-	defaultMessageChannelTimeout = 5 * time.Minute
+	defaultMessageChannelTimeout = 30 * time.Minute
 	defaultMessageSyncLogEvery   = 15 * time.Second
 	defaultMessageSyncWaitEvery  = 30 * time.Second
 )
@@ -111,17 +112,22 @@ func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) 
 		stats.Threads += one.Threads
 		stats.Members += one.Members
 		stats.Messages += one.Messages
+		stats.DeferredChannels += one.DeferredChannels
 	}
 	if opts.IncludeDMs {
 		dmStats, err := s.syncDMs(ctx, opts)
 		if err != nil {
-			s.logger.Warn("DM sync failed", "err", err)
-		} else {
-			stats.Channels += dmStats.Channels
-			stats.Messages += dmStats.Messages
+			return stats, fmt.Errorf("sync DMs: %w", err)
 		}
+		stats.Channels += dmStats.Channels
+		stats.Messages += dmStats.Messages
+		stats.DeferredChannels += dmStats.DeferredChannels
 	}
-	if err := s.store.SetSyncState(ctx, "sync:last_success", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	marker := "sync:last_success"
+	if stats.DeferredChannels > 0 {
+		marker = "sync:last_partial"
+	}
+	if err := s.store.SetSyncState(ctx, marker, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return stats, err
 	}
 	return stats, nil
@@ -188,11 +194,14 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 			continue
 		}
 	}
-	messageCount, err := s.syncMessageChannels(ctx, guildID, channelList, opts)
+	messageCount, deferred, err := s.syncMessageChannels(ctx, guildID, channelList, opts)
 	if err != nil {
 		return stats, err
 	}
 	stats.Messages += messageCount
+	if deferred {
+		stats.DeferredChannels++
+	}
 	return stats, nil
 }
 
@@ -222,6 +231,7 @@ func (s *Syncer) syncGuildIncompleteBatches(ctx context.Context, guildID string,
 		stats.Channels += one.Channels
 		stats.Threads += one.Threads
 		stats.Messages += one.Messages
+		stats.DeferredChannels += one.DeferredChannels
 	}
 	return stats, true, nil
 }
@@ -381,11 +391,14 @@ func (s *Syncer) syncDMs(ctx context.Context, opts SyncOptions) (SyncStats, erro
 	}
 
 	// Sync messages from DM channels
-	messageCount, err := s.syncMessageChannels(ctx, DMGuildID, dmChannels, opts)
+	messageCount, deferred, err := s.syncMessageChannels(ctx, DMGuildID, dmChannels, opts)
 	if err != nil {
 		return stats, err
 	}
 	stats.Messages += messageCount
+	if deferred {
+		stats.DeferredChannels++
+	}
 	s.logger.Info("DM sync completed", "channels", stats.Channels, "messages", stats.Messages)
 	return stats, nil
 }

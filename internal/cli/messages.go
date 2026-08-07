@@ -98,7 +98,7 @@ func (r *runtime) runMessages(args []string) error {
 		*limit = 0
 	}
 	if *syncNow {
-		if err := r.syncMessagesQuery(*channel, *guildFlag, *guildsFlag); err != nil {
+		if err := r.syncMessagesQuery(*channel, *guildFlag, *guildsFlag, sinceTime); err != nil {
 			return err
 		}
 	}

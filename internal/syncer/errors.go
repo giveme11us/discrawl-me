@@ -69,7 +69,9 @@ func isRetryableSyncError(ctx context.Context, err error) bool {
 		strings.Contains(msg, "http 500"),
 		strings.Contains(msg, "http 502"),
 		strings.Contains(msg, "http 503"),
-		strings.Contains(msg, "http 504"):
+		strings.Contains(msg, "http 504"),
+		strings.Contains(msg, "database is locked"),
+		strings.Contains(msg, "sqlite_busy"):
 		return true
 	default:
 		return false

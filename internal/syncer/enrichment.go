@@ -26,7 +26,7 @@ var attachmentHTTPClient = &http.Client{Timeout: 5 * time.Second}
 func buildMessageMutation(
 	ctx context.Context,
 	message *discordgo.Message,
-	channelName string,
+	guildID, channelName string,
 	embeddings bool,
 	attachmentText bool,
 ) (store.MessageMutation, error) {
@@ -35,7 +35,7 @@ func buildMessageMutation(
 		return store.MessageMutation{}, err
 	}
 	normalized := normalizeMessageParts(message, attachmentParts)
-	record := toMessageRecord(message, channelName, normalized)
+	record := toMessageRecord(message, guildID, channelName, normalized)
 	return store.MessageMutation{
 		Record:      record,
 		EventType:   "upsert",

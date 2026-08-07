@@ -48,10 +48,11 @@ type tailHandler struct {
 }
 
 func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Message) error {
-	if !t.allowGuild(msg.GuildID) {
+	guildID := msg.GuildID
+	if !t.allowGuild(guildID) {
 		return nil
 	}
-	mutation, err := buildMessageMutation(ctx, msg, "", false, t.attachmentTextEnabled)
+	mutation, err := buildMessageMutation(ctx, msg, guildID, "", false, t.attachmentTextEnabled)
 	if err != nil {
 		return err
 	}
@@ -68,7 +69,8 @@ func (t *tailHandler) OnMessageCreate(ctx context.Context, msg *discordgo.Messag
 }
 
 func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Message) error {
-	if !t.allowGuild(msg.GuildID) {
+	guildID := msg.GuildID
+	if !t.allowGuild(guildID) {
 		return nil
 	}
 	// Save edit history snapshot
@@ -81,7 +83,7 @@ func (t *tailHandler) OnMessageUpdate(ctx context.Context, msg *discordgo.Messag
 			RawJSON:   string(raw),
 		})
 	}
-	mutation, err := buildMessageMutation(ctx, msg, "", false, t.attachmentTextEnabled)
+	mutation, err := buildMessageMutation(ctx, msg, guildID, "", false, t.attachmentTextEnabled)
 	if err != nil {
 		return err
 	}

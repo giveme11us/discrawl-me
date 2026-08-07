@@ -5,6 +5,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -34,7 +35,7 @@ func TestMessageSyncOptionsNumericChannelID(t *testing.T) {
 		logger:     discardLogger(),
 	}
 	require.NoError(t, rt.withServices(false, func() error {
-		opts, err := rt.messageSyncOptions("1456744319972282449", "", "")
+		opts, err := rt.messageSyncOptions("1456744319972282449", "", "", time.Time{})
 		require.NoError(t, err)
 		require.Equal(t, []string{"g1"}, opts.GuildIDs)
 		require.Equal(t, []string{"1456744319972282449"}, opts.ChannelIDs)
@@ -64,7 +65,7 @@ func TestMessageSyncOptionsRequiresScopeWithoutDefaults(t *testing.T) {
 		logger:     discardLogger(),
 	}
 	require.NoError(t, rt.withServices(false, func() error {
-		_, err := rt.messageSyncOptions("", "", "")
+		_, err := rt.messageSyncOptions("", "", "", time.Time{})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "--channel or --guild")
 		return nil
@@ -92,7 +93,7 @@ func TestMessageSyncOptionsErrorsWhenChannelCannotResolve(t *testing.T) {
 		logger:     discardLogger(),
 	}
 	require.NoError(t, rt.withServices(false, func() error {
-		_, err := rt.messageSyncOptions("ghost-town", "", "")
+		_, err := rt.messageSyncOptions("ghost-town", "", "", time.Time{})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "cannot resolve channel")
 		return nil
@@ -102,7 +103,7 @@ func TestMessageSyncOptionsErrorsWhenChannelCannotResolve(t *testing.T) {
 func TestSyncMessagesQueryRequiresDiscordServices(t *testing.T) {
 	t.Parallel()
 
-	err := (&runtime{}).syncMessagesQuery("general", "", "")
+	err := (&runtime{}).syncMessagesQuery("general", "", "", time.Time{})
 	require.Error(t, err)
 	require.Equal(t, 2, ExitCode(err))
 }
@@ -149,7 +150,7 @@ func TestMessageSyncOptionsAddsGuildForMatchedChannel(t *testing.T) {
 		logger:     discardLogger(),
 	}
 	require.NoError(t, rt.withServices(false, func() error {
-		opts, err := rt.messageSyncOptions("#general", "", "")
+		opts, err := rt.messageSyncOptions("#general", "", "", time.Time{})
 		require.NoError(t, err)
 		require.Equal(t, []string{"g42"}, opts.GuildIDs)
 		require.Equal(t, []string{"c1"}, opts.ChannelIDs)
