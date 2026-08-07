@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 )
 
 // OllamaProvider generates embeddings using a local Ollama instance.
@@ -30,10 +32,10 @@ func NewOllama(endpoint, model string, dim int) *OllamaProvider {
 		dim = 768
 	}
 	return &OllamaProvider{
-		endpoint: endpoint,
+		endpoint: strings.TrimRight(endpoint, "/"),
 		model:    model,
 		dim:      dim,
-		client:   &http.Client{},
+		client:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -41,8 +43,14 @@ func (p *OllamaProvider) Name() string { return "ollama:" + p.model }
 func (p *OllamaProvider) Dim() int     { return p.dim }
 
 func (p *OllamaProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	// Truncate texts to max embedding length to avoid context length errors.
+	// nomic-embed-text has 8192 token context; ~4 chars/token, use 30000 as safe limit.
+	const maxEmbedChars = 30000
 	results := make([][]float32, len(texts))
 	for i, text := range texts {
+		if len(text) > maxEmbedChars {
+			text = text[:maxEmbedChars]
+		}
 		vec, err := p.embedSingle(ctx, text)
 		if err != nil {
 			return nil, fmt.Errorf("embed text %d: %w", i, err)
@@ -79,6 +87,9 @@ func (p *OllamaProvider) embedSingle(ctx context.Context, text string) ([]float3
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode ollama response: %w", err)
+	}
+	if len(result.Embedding) == 0 {
+		return nil, fmt.Errorf("ollama returned an empty embedding")
 	}
 
 	// Convert float64 to float32

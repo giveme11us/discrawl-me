@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+const staleProcessingAfter = 15 * time.Minute
+
+type embeddingJob struct {
+	messageID string
+	content   string
+}
+
 // EmbeddingStore is the subset of store methods the worker needs.
 type EmbeddingStore interface {
 	DB() *sql.DB
@@ -41,9 +48,86 @@ func NewWorker(store EmbeddingStore, provider Provider, batchSize int, logger *s
 
 // RunOnce processes one batch of pending embedding jobs. Returns the count processed.
 func (w *Worker) RunOnce(ctx context.Context) (int, error) {
-	// Claim a batch of pending jobs
-	rows, err := w.db.QueryContext(ctx, `
-		select ej.message_id, m.content
+	jobs, err := w.claimJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(jobs) == 0 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	processed := 0
+	failed := 0
+
+	// Embed each message individually to handle failures gracefully
+	for _, j := range jobs {
+		// Truncate content to avoid context length errors
+		content := j.content
+		if len(content) > 30000 {
+			content = content[:30000]
+		}
+
+		vecs, err := w.provider.Embed(ctx, []string{content})
+		if err == nil {
+			err = validateEmbeddingResponse(vecs, w.provider.Dim())
+		}
+		if err != nil {
+			failed++
+			if stateErr := w.failJob(ctx, j.messageID, now); stateErr != nil {
+				return processed, stateErr
+			}
+			w.logger.Warn("embed failed", "message_id", j.messageID, "err", err)
+			continue
+		}
+
+		vecBlob := float32ToBytes(vecs[0])
+		_, err = w.db.ExecContext(ctx, `
+			insert into message_embeddings(message_id, model, dim, vec, created_at)
+			values(?, ?, ?, ?, ?)
+			on conflict(message_id) do update set
+				model=excluded.model, dim=excluded.dim, vec=excluded.vec, created_at=excluded.created_at
+		`, j.messageID, w.provider.Name(), w.provider.Dim(), vecBlob, now)
+		if err != nil {
+			failed++
+			w.logger.Warn("store embedding failed", "message_id", j.messageID, "err", err)
+			if stateErr := w.failJob(ctx, j.messageID, now); stateErr != nil {
+				return processed, stateErr
+			}
+			continue
+		}
+		if _, err := w.db.ExecContext(ctx, `
+			update embedding_jobs set state = 'done', updated_at = ? where message_id = ?
+		`, now, j.messageID); err != nil {
+			return processed, fmt.Errorf("mark embedding job done: %w", err)
+		}
+		processed++
+	}
+
+	if failed > 0 {
+		return processed, fmt.Errorf("%d embedding job(s) failed", failed)
+	}
+	return processed, nil
+}
+
+func (w *Worker) claimJobs(ctx context.Context) ([]embeddingJob, error) {
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin embedding claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	staleBefore := time.Now().UTC().Add(-staleProcessingAfter).Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+		update embedding_jobs
+		set state = 'pending', attempts = attempts + 1, updated_at = ?
+		where state = 'processing' and updated_at < ?
+	`, time.Now().UTC().Format(time.RFC3339Nano), staleBefore); err != nil {
+		return nil, fmt.Errorf("recover stale embedding jobs: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		select ej.message_id, coalesce(m.content, '')
 		from embedding_jobs ej
 		join messages m on m.id = ej.message_id
 		where ej.state = 'pending'
@@ -51,76 +135,78 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 		limit ?
 	`, w.batchSize)
 	if err != nil {
-		return 0, fmt.Errorf("query pending jobs: %w", err)
+		return nil, fmt.Errorf("query pending jobs: %w", err)
 	}
-	defer rows.Close()
-
-	type job struct {
-		messageID string
-		content   string
-	}
-	var jobs []job
+	var jobs []embeddingJob
 	for rows.Next() {
-		var j job
-		if err := rows.Scan(&j.messageID, &j.content); err != nil {
-			return 0, err
+		var job embeddingJob
+		if err := rows.Scan(&job.messageID, &job.content); err != nil {
+			_ = rows.Close()
+			return nil, err
 		}
-		if j.content == "" {
-			j.content = " " // avoid empty string
+		if job.content == "" {
+			job.content = " "
 		}
-		jobs = append(jobs, j)
+		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		_ = rows.Close()
+		return nil, err
 	}
-	if len(jobs) == 0 {
-		return 0, nil
-	}
-
-	// Mark as processing
-	for _, j := range jobs {
-		_, _ = w.db.ExecContext(ctx, `
-			update embedding_jobs set state = 'processing', updated_at = ? where message_id = ?
-		`, time.Now().UTC().Format(time.RFC3339Nano), j.messageID)
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 
-	// Generate embeddings
-	texts := make([]string, len(jobs))
-	for i, j := range jobs {
-		texts[i] = j.content
-	}
-	vecs, err := w.provider.Embed(ctx, texts)
-	if err != nil {
-		// Mark as failed
-		for _, j := range jobs {
-			_, _ = w.db.ExecContext(ctx, `
-				update embedding_jobs set state = 'pending', attempts = attempts + 1, updated_at = ?
-				where message_id = ?
-			`, time.Now().UTC().Format(time.RFC3339Nano), j.messageID)
-		}
-		return 0, fmt.Errorf("embed batch: %w", err)
-	}
-
-	// Store embeddings and mark complete
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for i, j := range jobs {
-		vecBlob := float32ToBytes(vecs[i])
-		_, err := w.db.ExecContext(ctx, `
-			insert into message_embeddings(message_id, model, dim, vec, created_at)
-			values(?, ?, ?, ?, ?)
-			on conflict(message_id) do update set
-				model=excluded.model, dim=excluded.dim, vec=excluded.vec, created_at=excluded.created_at
-		`, j.messageID, w.provider.Name(), w.provider.Dim(), vecBlob, now)
+	for _, job := range jobs {
+		result, err := tx.ExecContext(ctx, `
+			update embedding_jobs set state = 'processing', updated_at = ?
+			where message_id = ? and state = 'pending'
+		`, now, job.messageID)
 		if err != nil {
-			w.logger.Warn("store embedding failed", "message_id", j.messageID, "err", err)
-			continue
+			return nil, fmt.Errorf("claim embedding job %s: %w", job.messageID, err)
 		}
-		_, _ = w.db.ExecContext(ctx, `
-			update embedding_jobs set state = 'done', updated_at = ? where message_id = ?
-		`, now, j.messageID)
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return nil, fmt.Errorf("claim embedding job %s: concurrent state change", job.messageID)
+		}
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit embedding claim: %w", err)
+	}
+	return jobs, nil
+}
 
-	return len(jobs), nil
+func (w *Worker) failJob(ctx context.Context, messageID, now string) error {
+	result, err := w.db.ExecContext(ctx, `
+		update embedding_jobs
+		set state = case when attempts + 1 >= 3 then 'failed' else 'pending' end,
+			attempts = attempts + 1, updated_at = ?
+		where message_id = ? and state = 'processing'
+	`, now, messageID)
+	if err != nil {
+		return fmt.Errorf("release embedding job %s: %w", messageID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return fmt.Errorf("release embedding job %s: unexpected state", messageID)
+	}
+	return nil
+}
+
+func validateEmbeddingResponse(vecs [][]float32, expectedDim int) error {
+	if len(vecs) != 1 {
+		return fmt.Errorf("provider returned %d vectors, want 1", len(vecs))
+	}
+	if len(vecs[0]) == 0 || len(vecs[0]) != expectedDim {
+		return fmt.Errorf("provider returned dimension %d, want %d", len(vecs[0]), expectedDim)
+	}
+	for _, value := range vecs[0] {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return fmt.Errorf("provider returned a non-finite vector value")
+		}
+	}
+	return nil
 }
 
 // RunAll processes all pending jobs in batches until none remain.

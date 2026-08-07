@@ -8,29 +8,41 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 )
 
-// OpenAIProvider generates embeddings using the OpenAI API.
+// OpenAIProvider generates embeddings using an OpenAI-compatible API.
 type OpenAIProvider struct {
-	apiKey string
-	model  string
-	dim    int
-	client *http.Client
+	apiKey   string
+	model    string
+	dim      int
+	endpoint string // base URL, defaults to https://api.openai.com
+	client   *http.Client
 }
 
 // NewOpenAI creates an OpenAI embedding provider.
 func NewOpenAI(apiKeyEnv, model string, dim int) *OpenAIProvider {
+	return NewOpenAIWithEndpoint(apiKeyEnv, model, dim, "")
+}
+
+// NewOpenAIWithEndpoint creates an OpenAI embedding provider with a custom base URL.
+func NewOpenAIWithEndpoint(apiKeyEnv, model string, dim int, endpoint string) *OpenAIProvider {
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
 	if dim <= 0 {
 		dim = 1536
 	}
+	if endpoint == "" {
+		endpoint = "https://api.openai.com"
+	}
 	return &OpenAIProvider{
-		apiKey: os.Getenv(apiKeyEnv),
-		model:  model,
-		dim:    dim,
-		client: &http.Client{},
+		apiKey:   os.Getenv(apiKeyEnv),
+		model:    model,
+		dim:      dim,
+		endpoint: strings.TrimRight(endpoint, "/"),
+		client:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -45,7 +57,7 @@ func (p *OpenAIProvider) Embed(ctx context.Context, texts []string) ([][]float32
 		"model": p.model,
 		"input": texts,
 	})
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", p.endpoint+"/v1/embeddings", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -75,11 +87,22 @@ func (p *OpenAIProvider) Embed(ctx context.Context, texts []string) ([][]float32
 
 	vecs := make([][]float32, len(texts))
 	for _, d := range result.Data {
+		if d.Index < 0 || d.Index >= len(vecs) {
+			return nil, fmt.Errorf("openai response index %d out of range", d.Index)
+		}
+		if vecs[d.Index] != nil {
+			return nil, fmt.Errorf("openai response contains duplicate index %d", d.Index)
+		}
 		vec := make([]float32, len(d.Embedding))
 		for i, v := range d.Embedding {
 			vec[i] = float32(v)
 		}
 		vecs[d.Index] = vec
+	}
+	for i, vec := range vecs {
+		if len(vec) == 0 {
+			return nil, fmt.Errorf("openai response missing embedding index %d", i)
+		}
 	}
 	return vecs, nil
 }
