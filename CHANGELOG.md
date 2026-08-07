@@ -4,6 +4,15 @@ All notable changes to `discrawl` will be documented in this file.
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-07
+
+- established the fork module as `github.com/giveme11us/discrawl-me` with reproducible public dependencies and forward-compatible Discord component decoding
+- made REST user-token access structurally read-only and tightened MCP SQL to read-only `SELECT`, `WITH`, and `EXPLAIN` queries
+- added Gateway connection shutdown and missed-heartbeat recovery without logging session identifiers
+- fixed resumable full-history checkpoints and distinguished partial syncs from successful syncs through `sync:last_partial` and deferred-channel statistics
+- made embedding claims transactional, recovered stale processing jobs, validated provider responses and surfaced failed batches
+- enabled real vector and hybrid MCP queries by embedding the search text and added filtered top-k vector search with `O(n log k)` ranking
+
 - `sync --all` now bypasses `default_guild_id` so one run can fan out across every discovered guild without clearing the single-guild default first
 - `sync --full` no longer aborts when forum thread discovery hits Discord `403 Missing Access`; inaccessible channels are skipped and marked unavailable while accessible channels continue syncing
 - startup now validates and stamps SQLite schema version via `PRAGMA user_version`, and fails fast if the local DB schema is newer than the running binary
