@@ -50,6 +50,12 @@ type UserConfig struct {
 	MinRequestGapMs   int    `toml:"min_request_gap_ms"`
 	JitterMsMin       int    `toml:"jitter_ms_min"`
 	JitterMsMax       int    `toml:"jitter_ms_max"`
+	// Gateway opts in to the live WebSocket connection. It is disabled by
+	// default: a user-token Gateway session announces a presence for the
+	// account, and Discord suppresses that account's own mobile push
+	// notifications while such a session is connected. REST sync needs no
+	// Gateway, so archiving works fully with this left off.
+	Gateway string `toml:"gateway"`
 }
 
 type SyncConfig struct {
@@ -149,6 +155,28 @@ func DefaultUserConfig() UserConfig {
 		JitterMsMin:       500,
 		JitterMsMax:       2000,
 	}
+}
+
+// Gateway opt-in values for UserConfig.Gateway.
+//
+// User-token Gateway sessions are opt-in because they carry a side effect that
+// is invisible from inside the tool: while such a session is connected,
+// Discord treats the account as having an active client and withholds that
+// account's own mobile push notifications.
+const (
+	// GatewayDisabled is the default. REST sync still archives everything;
+	// only live tail is unavailable.
+	GatewayDisabled = "disabled"
+	// GatewayEnabled turns the live connection on, accepting that the
+	// account's mobile push notifications will be suppressed meanwhile.
+	GatewayEnabled = "enabled"
+)
+
+// IsGatewayEnabled reports whether the live Gateway connection is opted in.
+// Anything other than an explicit opt-in is treated as disabled, so a typo or
+// an old config fails closed rather than silently muting the user's phone.
+func (c UserConfig) IsGatewayEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Gateway), GatewayEnabled)
 }
 
 // IsUserMode returns true if the config is set to user-token (self-bot) mode.
