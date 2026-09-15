@@ -77,6 +77,12 @@ type EmbeddingsConfig struct {
 	Endpoint  string `toml:"endpoint"`
 	APIKeyEnv string `toml:"api_key_env"`
 	BatchSize int    `toml:"batch_size"`
+	// Dim is the embedding vector length. Leave at 0 to accept the provider
+	// default (1536, the OpenAI text-embedding size). It must be set when the
+	// model returns a different length — bge-m3 returns 1024 — because the
+	// worker validates every response against this value and rejects the whole
+	// batch on a mismatch.
+	Dim int `toml:"dim"`
 }
 
 type TokenResolution struct {
