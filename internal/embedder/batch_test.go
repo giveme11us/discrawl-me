@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"testing"
 
 	"github.com/giveme11us/discrawl-me/internal/store"
@@ -116,4 +117,92 @@ func TestWorkerFallsBackToIndividualOnBatchFailure(t *testing.T) {
 	// First the batch of three, then the individual retries.
 	require.Equal(t, 3, p.callSizes[0])
 	require.Greater(t, len(p.callSizes), 1, "a rejected batch must be retried individually")
+}
+
+// flakyProvider fails the first `failFirst` calls, then succeeds. It models a
+// provider that returns 502 for a few seconds and recovers.
+type flakyProvider struct {
+	calls     int
+	failFirst int
+}
+
+func (p *flakyProvider) Name() string { return "flaky" }
+func (p *flakyProvider) Dim() int     { return 3 }
+
+func (p *flakyProvider) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	p.calls++
+	if p.calls <= p.failFirst {
+		return nil, fmt.Errorf("simulated 502 from gateway")
+	}
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(i), 1, 2}
+	}
+	return out, nil
+}
+
+// A transient provider outage must not end a long run: a single 502 once
+// killed a 15-hour indexing pass at 9% and nothing noticed for two hours.
+func TestRunAllSurvivesTransientProviderFailure(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, t.TempDir()+"/test.db")
+	require.NoError(t, err)
+	defer s.Close()
+
+	contents := map[string]string{}
+	for i := 0; i < 6; i++ {
+		contents[fmt.Sprintf("m%02d", i)] = fmt.Sprintf("message %d", i)
+	}
+	seedMessages(ctx, t, s, contents)
+
+	// Fails the batch and all 6 individual retries, then recovers.
+	p := &flakyProvider{failFirst: 7}
+	w := NewWorker(s, p, 6, nil)
+
+	n, err := w.RunAll(ctx)
+	require.NoError(t, err, "a recovered outage must not fail the run")
+	require.Equal(t, 6, n, "every message must be embedded after recovery")
+
+	var stored int
+	require.NoError(t, s.DB().QueryRowContext(ctx,
+		`select count(*) from message_embeddings`).Scan(&stored))
+	require.Equal(t, 6, stored)
+}
+
+// A provider that never recovers must terminate the run instead of retrying
+// forever. Note the run may end either by exhausting the consecutive-failure
+// budget or because every job burned its own retry allowance and left the
+// queue — both are correct terminations; what matters is that RunAll returns
+// and does not store a vector it never received.
+func TestRunAllGivesUpOnPersistentFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	s, err := store.Open(ctx, t.TempDir()+"/test.db")
+	require.NoError(t, err)
+	defer s.Close()
+
+	seedMessages(ctx, t, s, map[string]string{"m1": "one"})
+
+	p := &flakyProvider{failFirst: 1 << 30}
+	w := NewWorker(s, p, 1, nil)
+
+	done := make(chan struct{})
+	var n int
+	go func() {
+		n, _ = w.RunAll(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("RunAll never returned against a permanently failing provider")
+	}
+
+	require.Equal(t, 0, n, "nothing can be reported as embedded")
+	var stored int
+	require.NoError(t, s.DB().QueryRowContext(ctx,
+		`select count(*) from message_embeddings`).Scan(&stored))
+	require.Equal(t, 0, stored, "no vector may be stored when every call failed")
 }

@@ -278,8 +278,18 @@ func validateEmbeddingResponse(vecs [][]float32, expectedDim int) error {
 }
 
 // RunAll processes all pending jobs in batches until none remain.
+//
+// A transient provider error must not end the run: a single 502 from the
+// endpoint once killed a 15-hour indexing pass that was 9% done, and nothing
+// noticed for two hours. Failures are tolerated with backoff and only abort
+// the run when they persist, which distinguishes "the network hiccuped" from
+// "the endpoint is gone".
 func (w *Worker) RunAll(ctx context.Context) (int, error) {
+	const maxConsecutiveFailures = 10
+
 	total := 0
+	consecutive := 0
+
 	for {
 		n, err := w.RunOnce(ctx)
 		// Count the work that succeeded even when the pass reports an error:
@@ -287,9 +297,34 @@ func (w *Worker) RunAll(ctx context.Context) (int, error) {
 		// stored the others. Returning the pre-pass total would understate the
 		// vectors actually written and paid for.
 		total += n
+
 		if err != nil {
-			return total, err
+			// A cancelled context is the operator stopping us, not a fault.
+			if ctx.Err() != nil {
+				return total, ctx.Err()
+			}
+			consecutive++
+			if consecutive >= maxConsecutiveFailures {
+				return total, fmt.Errorf("%d consecutive failed passes, last: %w",
+					consecutive, err)
+			}
+			// Exponential backoff capped at 30s: a provider under load needs
+			// room to recover, and hammering it makes the outage worse.
+			wait := time.Duration(1<<uint(consecutive-1)) * time.Second
+			if wait > 30*time.Second {
+				wait = 30 * time.Second
+			}
+			w.logger.Warn("embedding pass failed, retrying",
+				"attempt", consecutive, "wait", wait, "total", total, "err", err)
+			select {
+			case <-ctx.Done():
+				return total, ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
 		}
+
+		consecutive = 0
 		if n == 0 {
 			return total, nil
 		}
