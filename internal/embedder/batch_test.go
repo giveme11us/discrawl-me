@@ -103,10 +103,11 @@ func TestWorkerFallsBackToIndividualOnBatchFailure(t *testing.T) {
 
 	p := &countingProvider{failOn: "poison"}
 	w := NewWorker(s, p, 3, nil)
-	n, err := w.RunAll(ctx)
+	n, _ := w.RunAll(ctx)
 
-	// The poisoned message fails, the other two survive.
-	require.Error(t, err, "the failing message should be reported")
+	// The poisoned message fails, the other two survive. RunAll no longer
+	// propagates the error: it retries failed passes and the bad job burns its
+	// own retry allowance, so the run ends cleanly with the good work stored.
 	require.Equal(t, 2, n, "messages batched with a bad one must still be stored")
 
 	var stored int
