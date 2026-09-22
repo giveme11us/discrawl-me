@@ -212,6 +212,9 @@ func TestSuperPropertiesEncoding(t *testing.T) {
 
 func TestUserClientTailRequiresHandler(t *testing.T) {
 	cfg := testConfig()
+	// The Gateway opt-in guard is checked before the handler, so opting in is
+	// required to reach the handler validation this test covers.
+	cfg.Gateway = config.GatewayEnabled
 	client, err := New("token", cfg)
 	require.NoError(t, err)
 	err = client.Tail(context.Background(), nil)

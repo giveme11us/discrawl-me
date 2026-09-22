@@ -2,6 +2,7 @@ package userclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,12 +15,28 @@ import (
 	"github.com/giveme11us/discrawl-me/internal/discord"
 )
 
+// ErrGatewayDisabled is returned when live tail is attempted in user-token
+// mode without opting in to the Gateway connection.
+//
+// The Gateway is the only component that announces a presence for the account.
+// While a user-token Gateway session is connected, Discord considers the
+// account to have an active client and withholds its mobile push
+// notifications — a side effect with no signal inside the tool, which is why
+// it is refused rather than merely documented. REST sync archives the same
+// content without a Gateway, so the archive stays complete either way.
+var ErrGatewayDisabled = errors.New(
+	"discrawl-me: live tail is disabled in user mode because a user-token Gateway session " +
+		"suppresses this account's mobile push notifications; use REST sync, or set " +
+		"discord.user.gateway = \"enabled\" to accept that trade-off",
+)
+
 // UserClient implements discord.Client using a user token (self-bot).
 // All requests go through a custom HTTP transport with rate limiting,
 // super-properties headers, and read-only enforcement.
 type UserClient struct {
-	transport *transport
-	gateway   *Gateway
+	transport      *transport
+	gateway        *Gateway
+	gatewayEnabled bool
 }
 
 // Compile-time check that UserClient satisfies the discord.Client interface.
@@ -49,8 +66,9 @@ func New(token string, cfg config.UserConfig) (*UserClient, error) {
 		return nil, err
 	}
 	return &UserClient{
-		transport: newTransport(tcfg, pc),
-		gateway:   NewGateway(token, tcfg.superPropsEncoded, slog.Default(), pc),
+		transport:      newTransport(tcfg, pc),
+		gateway:        NewGateway(token, tcfg.superPropsEncoded, slog.Default(), pc),
+		gatewayEnabled: cfg.IsGatewayEnabled(),
 	}, nil
 }
 
@@ -209,7 +227,15 @@ func (c *UserClient) ChannelMessage(ctx context.Context, channelID, messageID st
 }
 
 // Tail connects to the Discord Gateway and dispatches live events.
+//
+// Refused unless explicitly opted in: the Gateway announces a presence for
+// this account, and Discord suppresses the account's own mobile push
+// notifications for as long as that session is connected. See
+// ErrGatewayDisabled.
 func (c *UserClient) Tail(ctx context.Context, handler discord.EventHandler) error {
+	if !c.gatewayEnabled {
+		return ErrGatewayDisabled
+	}
 	return c.gateway.Run(ctx, handler)
 }
 

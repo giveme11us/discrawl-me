@@ -229,7 +229,7 @@ func (r *runtime) createEmbedProvider() embedder.Provider {
 	cfg := r.cfg.Search.Embeddings
 	switch cfg.Provider {
 	case "openai":
-		return embedder.NewOpenAIWithEndpoint(cfg.APIKeyEnv, cfg.Model, 0, cfg.Endpoint)
+		return embedder.NewOpenAIWithEndpoint(cfg.APIKeyEnv, cfg.Model, cfg.Dim, cfg.Endpoint)
 	default:
 		// Default to Ollama
 		return embedder.NewOllama(cfg.Endpoint, cfg.Model, 0)

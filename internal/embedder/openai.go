@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// embedderUserAgent identifies this client to the embedding endpoint. It must
+// not be left at Go's default ("Go-http-client/..."), which CDN-fronted
+// gateways reject with 403 as unidentified bot traffic.
+const embedderUserAgent = "discrawl-me"
+
 // OpenAIProvider generates embeddings using an OpenAI-compatible API.
 type OpenAIProvider struct {
 	apiKey   string
@@ -63,6 +68,11 @@ func (p *OpenAIProvider) Embed(ctx context.Context, texts []string) ([][]float32
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	// Go's default User-Agent ("Go-http-client/...") is rejected with 403 by
+	// CDN-fronted gateways that treat it as an unidentified bot — verified
+	// against the Nous Portal proxy, where the identical request succeeds with
+	// any other agent string. Identify the tool instead.
+	req.Header.Set("User-Agent", embedderUserAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
