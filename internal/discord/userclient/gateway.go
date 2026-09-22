@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/gorilla/websocket"
 	"github.com/giveme11us/discrawl-me/internal/discord"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -78,6 +78,8 @@ type Gateway struct {
 	superProps string // base64 encoded, same as REST
 	logger     *slog.Logger
 
+	dialer *websocket.Dialer
+
 	conn         *websocket.Conn
 	mu           sync.Mutex // protects writes to conn
 	heartbeatACK bool
@@ -101,14 +103,27 @@ func (g *Gateway) Close() error {
 }
 
 // NewGateway creates a Gateway client for user-token mode.
-func NewGateway(token, superPropsEncoded string, logger *slog.Logger) *Gateway {
+//
+// pc may be nil, which means connect directly (with the environment's proxy
+// settings still applying, as they did when this used websocket.DefaultDialer).
+func NewGateway(token, superPropsEncoded string, logger *slog.Logger, pc *proxyConfig) *Gateway {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	// Mirrors websocket.DefaultDialer, which is what this used before, so the
+	// handshake timeout and buffer sizing do not change underneath anyone.
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 45 * time.Second,
+		Proxy:            pc.proxyFunc(),
+	}
+	if pc != nil && pc.dialContext != nil {
+		dialer.NetDialContext = pc.dialContext
 	}
 	return &Gateway{
 		token:      token,
 		superProps: superPropsEncoded,
 		logger:     logger,
+		dialer:     dialer,
 	}
 }
 
@@ -148,7 +163,7 @@ func (g *Gateway) Run(ctx context.Context, handler discord.EventHandler) error {
 
 // session runs a single WebSocket connection lifecycle.
 func (g *Gateway) session(ctx context.Context, url string) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
+	conn, _, err := g.dialer.DialContext(ctx, url, nil)
 	if err != nil {
 		return fmt.Errorf("dial gateway: %w", err)
 	}

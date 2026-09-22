@@ -63,9 +63,16 @@ type transport struct {
 	lastReq time.Time
 }
 
-func newTransport(cfg transportConfig) *transport {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	// TODO: proxy support via cfg.proxy (SOCKS5/HTTP)
+func newTransport(cfg transportConfig, pc *proxyConfig) *transport {
+	// Cloned from the stdlib default so that the connection pooling, HTTP/2
+	// and timeout behaviour stay exactly what they were when this used
+	// http.DefaultTransport; only the dial and the proxy are ours.
+	rt := http.DefaultTransport.(*http.Transport).Clone()
+	rt.Proxy = pc.proxyFunc()
+	if pc.dialContext != nil {
+		rt.DialContext = pc.dialContext
+	}
+	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: rt}
 	return &transport{
 		cfg:    cfg,
 		client: httpClient,
