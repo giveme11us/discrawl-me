@@ -57,9 +57,17 @@ func New(token string, cfg config.UserConfig) (*UserClient, error) {
 		jitterMax:         time.Duration(cfg.JitterMsMax) * time.Millisecond,
 		proxy:             cfg.Proxy,
 	}
+	// Parsed once, up front: a bad proxy is a startup error, never a silent
+	// fall back to a direct connection. For a user-token client the whole
+	// point of the setting is which IP Discord sees, so "it did not work so
+	// we went direct" is the one outcome that must not be possible.
+	pc, err := newProxyConfig(cfg.Proxy)
+	if err != nil {
+		return nil, err
+	}
 	return &UserClient{
-		transport:      newTransport(tcfg),
-		gateway:        NewGateway(token, tcfg.superPropsEncoded, slog.Default()),
+		transport:      newTransport(tcfg, pc),
+		gateway:        NewGateway(token, tcfg.superPropsEncoded, slog.Default(), pc),
 		gatewayEnabled: cfg.IsGatewayEnabled(),
 	}, nil
 }

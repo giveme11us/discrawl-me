@@ -175,6 +175,7 @@ locale = "it"
 min_request_gap_ms = 1000        # Conservative rate limit
 jitter_ms_min = 500
 jitter_ms_max = 2000
+proxy = ""                       # See "Running from a server" below
 
 [sync]
 concurrency = 1                  # Keep low for user mode
@@ -187,6 +188,50 @@ enabled = false
 provider = "ollama"              # "ollama" or "openai"
 model = "nomic-embed-text"
 batch_size = 32
+```
+
+## Running from a server
+
+Moving the archiver onto a VPS or a home-lab container changes one thing that
+matters more than anything else in this project: the IP Discord sees. A user
+token that has always signed in from a home connection and suddenly appears
+from a datacenter range is the pattern account review looks for. Nothing about
+the headers or the pacing in this client compensates for that.
+
+`[discord.user] proxy` makes the Discord traffic — both the REST calls and the
+Gateway WebSocket — leave through somewhere else, while everything else the
+machine does still goes out directly:
+
+```toml
+[discord.user]
+# A SOCKS5 proxy reachable from this machine. Point it at something on the
+# network you normally connect from. A bare host:port is read as socks5.
+proxy = "socks5://100.x.y.z:1080"
+```
+
+Supported: `socks5://`, `socks5h://`, `http://`, `https://`, and `host:port`
+(read as socks5). With a username and password: `socks5://user:pass@host:port`.
+
+Two behaviours worth knowing:
+
+- **Hostnames are resolved by the proxy, not locally** (what curl spells
+  `socks5h`). Resolving `discord.com` on the machine running the client would
+  put its resolver back in the path you are trying to keep out.
+- **A proxy that cannot be parsed is a startup error.** The client will not
+  quietly fall back to a direct connection, because doing so would send the
+  token out from the IP you were trying to avoid, and you would not find out
+  until it mattered.
+
+Leaving `proxy` empty keeps the previous behaviour, including `HTTP_PROXY` and
+`HTTPS_PROXY` from the environment.
+
+The simplest proxy that works is an SSH dynamic forward from the machine that
+should be the exit point — no extra software:
+
+```bash
+# On the server, pointing at your home machine:
+ssh -N -D 127.0.0.1:1080 you@home-machine
+# then: proxy = "socks5://127.0.0.1:1080"
 ```
 
 ## Embeddings
