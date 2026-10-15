@@ -1,40 +1,36 @@
 #!/bin/bash
-# Periodic REST sync for discrawl-me.
+# Periodic REST sync for discrawl-me — versione container (LXC hermes-gw).
 #
-# Replaces the persistent tail collector. A user-token Gateway session
-# announces a presence for the account, and Discord withholds that account's
-# own mobile push notifications for as long as it is connected (verified
-# 2026-08-29: stopping the tail collector restored notifications within minutes).
+# Gemella di run-sync.sh sul Mac, con due differenze che contano.
 #
-# `sync` never opens the Gateway — it only issues REST GETs — so this archives
-# the same content while leaving mobile notifications intact. The process runs
-# and exits; launchd restarts it on StartInterval.
+# 1. Il traffico Discord esce dal SOCKS5 sulla 1080, aperto dal Mac verso qui
+#    (LaunchAgent eu.easycop.discrawl-me-exit-tunnel). Il token utente ha sempre
+#    fatto login da casa; un login dall'IP del datacenter e' il pattern che manda
+#    un account in revisione. La configurazione lo impone, e discrawl si rifiuta
+#    di partire se il proxy non e' leggibile invece di andare diretto.
 #
-# Since 2026-09-08 this wrapper no longer execs the native binary directly. It
-# execs run-selected-sync.py, which runs the same unchanged EasyCop command
-# first (no time limit) and then spends a bounded budget on the approved
-# selective backfill of the two new guilds. Token handling is unchanged: the
-# token is read from disk into the environment and never printed.
+# 2. Prima di ogni ciclo questo wrapper controlla che il tunnel ci sia davvero.
+#    discrawl fallirebbe comunque in connessione, ma fallirebbe dopo aver
+#    provato: meglio non provare affatto e dirlo chiaro nel log, perche' un
+#    tunnel giu' significa Mac spento o addormentato, non un guasto qui.
 #
-# The "a sync is already running" guard moved into the scheduler, which does the
-# same pgrep match inside its own flock, skips the whole cycle when another
-# native sync is live, and never kills it.
+# Come sul Mac: `sync` non apre mai il Gateway, fa solo GET REST, quindi le
+# notifiche push dell'account restano intatte.
 set -euo pipefail
 
-repo_dir="/Users/ivansposato/GitHub/tools/discrawl-me"
-token_file="/Users/ivansposato/.config/discrawl-me/token"
-# The config path (~/.config/discrawl-me/config.toml) and the guild ids now live
-# in run-selected-sync.py, which builds every native command.
+repo_dir="/home/hermes/GitHub/tools/discrawl-me"
+token_file="/home/hermes/.config/discrawl-me/token"
 python_bin="/usr/bin/python3"
 scheduler="$repo_dir/run-selected-sync.py"
+proxy_host="127.0.0.1"
+proxy_port="1080"
 
 if [[ ! -r "$scheduler" ]]; then
   echo "Selective sync scheduler is missing: $scheduler" >&2
   exit 1
 fi
 
-# --dry-run prints the planned commands only: no native launch, no token read,
-# no state/log/lock writes.
+# --dry-run non tocca Discord: niente token, niente controllo del tunnel.
 for arg in "$@"; do
   if [[ "$arg" == "--dry-run" ]]; then
     exec "$python_bin" "$scheduler" "$@"
@@ -44,6 +40,16 @@ done
 if [[ ! -r "$token_file" ]]; then
   echo "Discord token is not configured." >&2
   exit 1
+fi
+
+# Il tunnel e' su? Una connessione TCP basta: se la porta accetta, il forward
+# remoto e' vivo. Bash lo fa senza installare niente.
+if ! timeout 5 bash -c "exec 3<>/dev/tcp/$proxy_host/$proxy_port" 2>/dev/null; then
+  echo "Exit tunnel down: no SOCKS5 on $proxy_host:$proxy_port." >&2
+  echo "Il Mac lo apre con il LaunchAgent eu.easycop.discrawl-me-exit-tunnel;" >&2
+  echo "se il Mac e' spento o addormentato questo e' il comportamento atteso." >&2
+  echo "Non procedo: un sync diretto uscirebbe dall'IP del datacenter." >&2
+  exit 75   # EX_TEMPFAIL: condizione transitoria, riprovare al prossimo giro
 fi
 
 DISCORD_USER_TOKEN="$(<"$token_file")"

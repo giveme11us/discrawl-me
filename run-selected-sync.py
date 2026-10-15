@@ -45,7 +45,27 @@ from datetime import datetime, timezone
 # Fixed production configuration
 # --------------------------------------------------------------------------
 
-_HOME = "/Users/ivansposato"
+def _resolve_home():
+    """Where the discrawl-me installation lives.
+
+    This used to be the literal "/Users/ivansposato", which was honest while
+    there was one machine. It stops being honest the moment the archiver also
+    runs somewhere else: every path below would still point at a home
+    directory that does not exist there, and the failure is quiet — a missing
+    manifest reads as "no selected work this cycle", not as a misconfiguration.
+
+    DISCRAWL_HOME wins when set, so a scheduler can be pointed at a specific
+    installation without touching this file. Otherwise the user's own home is
+    used, which is what the hard-coded value meant on the machine it was
+    written for. Nothing changes there; it just stops being the only answer.
+    """
+    override = os.environ.get("DISCRAWL_HOME", "").strip()
+    if override:
+        return override.rstrip("/")
+    return os.path.expanduser("~").rstrip("/")
+
+
+_HOME = _resolve_home()
 
 Paths = collections.namedtuple(
     "Paths", "binary config manifest state lock log child_log_dir")
