@@ -309,6 +309,12 @@ func (s *Syncer) seedChannelSyncState(ctx context.Context, channelID string, sta
 }
 
 func (s *Syncer) syncFullChannelHistory(ctx context.Context, guildID string, channel *discordgo.Channel, state channelSyncState, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
+	// A channel that was empty when marked complete has no forward cursor.
+	// Fresh discovery can reveal its first message; bootstrap that new content
+	// without clearing the complete marker or any existing checkpoint.
+	if state.BackfillComplete && state.Latest == "" && channel.LastMessageID != "" {
+		return s.bootstrapChannelHistory(ctx, guildID, channel, embeddings, since, progress)
+	}
 	messageCount := 0
 	newest := state.Latest
 	if state.Latest != "" {

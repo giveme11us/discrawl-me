@@ -74,6 +74,7 @@ Usage:
   discrawl [global flags] <command> [args]
 
 Commands:
+  discover --guild ID [--thread-parents CSV]  (metadata only; coverage in JSON)
   init
   sync
   tail

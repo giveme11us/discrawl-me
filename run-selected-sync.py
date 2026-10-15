@@ -13,8 +13,10 @@ Per cycle (launchd fires the wrapper every 600 s):
   2. skip the whole cycle if an external native sync for the same config is
      already running (detected, never killed),
   3. validate the approved manifest strictly before building any command,
-  4. run the unchanged EasyCop command first, with no time limit,
-  5. spend at most BUDGET seconds on the selected channels, one native child at
+  4. discover current metadata in both EasyCop/Dustify, with explicit coverage,
+  5. derive a fail-closed collection plan from approved category/role evidence,
+  6. sync the explicit EasyCop inventory first, with no time limit,
+  7. spend at most BUDGET seconds on the selected channels, one native child at
      a time, each capped at CHILD seconds or whatever is left of the budget,
      advancing a durable round-robin cursor after every reaped child.
 
@@ -39,6 +41,9 @@ import signal
 import subprocess
 import sys
 import time
+import re
+import unicodedata
+import copy
 from datetime import datetime, timezone
 
 # --------------------------------------------------------------------------
@@ -302,22 +307,172 @@ def targets_fingerprint(targets):
 
 
 # --------------------------------------------------------------------------
+# Current metadata -> explicit collection plan. No Discord HTTP in this runner.
+# --------------------------------------------------------------------------
+
+
+def _label(value):
+    return "-".join(re.findall(r"[a-z0-9]+", unicodedata.normalize(
+        "NFKD", value.lower())))
+
+
+def _editorial_category(category):
+    # Names come from the approved manifest, never arbitrary new category IDs.
+    words = set(category.split("-"))
+    return bool(words & {"releases", "tcg", "pokemon", "important"}) and not (
+        words & {"topps", "funko", "vinyl"})
+
+
+def _roles(name):
+    name = _label(name)
+    roles = set()
+    for prefix in ("important-",):
+        if name.startswith(prefix):
+            roles.add(prefix + "*")
+    for suffix in ("-releases", "-upcoming-leaks", "-links-info"):
+        if name.endswith(suffix):
+            roles.add("*" + suffix)
+    if re.search(r"(?:^|-)\d{1,2}-\d{1,2}-", name):
+        roles.add("dated-item")
+    return roles
+
+
+def discovery_command(paths, guild_id):
+    if guild_id not in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+        raise ManifestError("discovery outside the two authorized guilds")
+    return [paths.binary, "--config", paths.config, "--json", "--quiet",
+            "discover", "--guild", guild_id]
+
+
+def collection_plan(document, reports):
+    """Build from a fresh inventory, not an ever-growing cached ID list.
+
+    Original manifest targets remain the archive baseline, including historical
+    topps/funko/vinyl targets (the later radar excludes them editorially).
+    No NEW target in those categories is inferred. New ambiguous categories or
+    names fail closed and are explicitly listed for review.
+    """
+    effective = copy.deepcopy(document)
+    plan = {"version": 1, "guilds": {}, "thread_coverage_complete": False}
+    for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+        report = reports.get(gid)
+        if not isinstance(report, dict) or report.get("guild_id") != gid:
+            raise ManifestError("missing/mismatched discovery guild")
+        if not report.get("observed_at") or report.get("coverage", {}).get("top_level") != "observed":
+            raise ManifestError("discovery has no current top-level observation")
+        channels = report.get("channels")
+        if not isinstance(channels, list):
+            raise ManifestError("discovery channels must be a list")
+        cached = report.get("cached_threads") or []
+        if not isinstance(cached, list):
+            raise ManifestError("cached_threads must be a list")
+        cached_ids = set()
+        for ch in cached:
+            if not isinstance(ch, dict) or ch.get("type") not in (10, 11):
+                raise ManifestError("invalid cached public thread")
+            cached_ids.add(ch.get("id"))
+        channels = channels + cached
+        by_id = {}
+        for ch in channels:
+            if (not isinstance(ch, dict) or not _is_snowflake(ch.get("id"))
+                    or ch.get("guild_id") != gid or ch["id"] in by_id
+                    or not isinstance(ch.get("type"), int)
+                    or not isinstance(ch.get("name"), str)):
+                raise ManifestError("malformed/cross-guild discovery channel")
+            by_id[ch["id"]] = ch
+        categories = {cid: _label(ch["name"]) for cid, ch in by_id.items()
+                      if ch["type"] == 4}
+        entry = next((e for e in effective["new_guilds"] if e["guild_id"] == gid), None)
+        seeds = {} if entry is None else {c["id"]: c for c in entry["channels"]}
+        category_roles = {}
+        category_counts = collections.Counter(categories.values())
+        admitted_parents = set()
+        seed_types = {"Testo": 0, "Forum": 15, "Annunci": 5}
+        for seed in seeds.values():
+            cat = _label(seed.get("category", ""))
+            current = by_id.get(seed["id"], {})
+            parent_id = current.get("parent_id")
+            if (_editorial_category(cat) and seed.get("type") in seed_types
+                    and current.get("type") == seed_types[seed["type"]]
+                    and categories.get(parent_id) == cat and category_counts[cat] == 1):
+                admitted_parents.add(parent_id)
+                category_roles.setdefault((cat, seed_types[seed["type"]]), set()).update(_roles(seed["name"]))
+        selected = {}
+        decisions = []
+        def category_of(ch):
+            parent = by_id.get(ch.get("parent_id"), {})
+            if ch["type"] in (10, 11, 12):
+                return categories.get(parent.get("parent_id"), "")
+            return categories.get(ch.get("parent_id"), "")
+        def decide(ch, thread=False):
+            cid, kind = ch["id"], ch["type"]
+            category = category_of(ch)
+            historical = bool(re.search(r"(?:^|-)(?:archive|archived|past-releases)(?:-|$)", category))
+            allowed = False
+            reason = "metadata-only: unsupported/non-message type"
+            if kind in (0, 5, 15, 10, 11):
+                if gid == EASYCOP_GUILD_ID:
+                    allowed, reason = True, "existing EasyCop unfiltered collection"
+                elif thread:
+                    allowed = ch.get("parent_id") in selected
+                    reason = "selected public parent" if allowed else "unselected thread parent"
+                elif category_counts[category] > 1:
+                    reason = "review: duplicate/ambiguous category label"
+                elif cid in seeds:
+                    allowed = (category == _label(seeds[cid].get("category", ""))
+                               and kind == seed_types.get(seeds[cid].get("type")))
+                    reason = "approved baseline; current category/type verified" if allowed else "review: baseline moved/category renamed/type changed"
+                elif ch.get("parent_id") not in admitted_parents or (category, kind) not in category_roles:
+                    reason = "review: unknown/excluded category; no expansion"
+                elif set(category.split("-")) & {"topps", "funko", "vinyl"} or set(_label(ch["name"]).split("-")) & {"topps", "funko", "vinyl"}:
+                    reason = "excluded editorial subject"
+                elif _roles(ch["name"]) & category_roles[(category, kind)]:
+                    allowed, reason = True, "new editorial role demonstrated by approved category seeds"
+                else:
+                    reason = "review: unrecognized role in admitted category"
+            if allowed:
+                selected[cid] = {"id": cid, "name": ch["name"], "category": category,
+                                 "type": "Forum" if kind == 15 else "Testo"}
+            decisions.append({"id": cid, "name": ch["name"], "parent_id": ch.get("parent_id", ""),
+                              "type": kind, "category": category, "collect": allowed,
+                              "reason": reason, "freshness": "cached_unconfirmed" if cid in cached_ids else "observed",
+                              "room_state": "historical" if historical else
+                              ("archived_thread" if (ch.get("thread_metadata") or {}).get("archived") else "active_or_unclassified")})
+        for cid in sorted(by_id):
+            if by_id[cid]["type"] not in (10, 11, 12):
+                decide(by_id[cid])
+        for cid in sorted(by_id):
+            if by_id[cid]["type"] in (10, 11, 12):
+                decide(by_id[cid], thread=True)
+        if entry is not None:
+            entry["channels"] = [selected[cid] for cid in sorted(selected)]
+        plan["guilds"][gid] = {"observed_at": report["observed_at"],
+                                "coverage": report["coverage"], "decisions": decisions,
+                                "missing_baseline_ids": sorted(set(seeds) - set(by_id))}
+    return effective, plan
+
+
+# --------------------------------------------------------------------------
 # Native commands
 # --------------------------------------------------------------------------
 
 
-def easycop_command(paths, guild_id=EASYCOP_GUILD_ID):
-    """The pre-existing command, byte for byte: unfiltered guild, no extra flags."""
-    return [paths.binary, "--config", paths.config, "sync", "--guild", guild_id]
+def easycop_command(paths, guild_id=EASYCOP_GUILD_ID, channel_ids=None):
+    """Preserve EasyCop's whole-guild policy, make the actual inventory explicit."""
+    command = [paths.binary, "--config", paths.config, "sync", "--guild", guild_id,
+               "--include-dms=false", "--refresh-members"]
+    if channel_ids is None or not channel_ids or not all(_is_snowflake(cid) for cid in channel_ids):
+        raise ManifestError("refusing empty/invalid explicit EasyCop selection")
+    command += ["--channels", ",".join(channel_ids)]
+    return command
 
 
 def selected_command(paths, target):
     """One native invocation for exactly one approved channel.
 
-    --full because the incremental path has no durable per-page cursor, so an
-    interrupted incremental pass would restart from scratch. An empty --channels
-    value would mean "the whole guild": it is rejected here as well as in the
-    manifest validator.
+    --full retains native forward + per-page backfill checkpoints. Completed
+    histories are not restarted. An empty --channels value would mean the whole
+    guild, so it is rejected here as well as in the manifest validator.
     """
     if not _is_snowflake(target.channel_id):
         raise ManifestError(
@@ -522,6 +677,25 @@ def new_state(fingerprint, targets=()):
     }
 
 
+def reconcile_state(previous, fingerprint, targets):
+    """Changing selection is not permission to erase past attempts/cursors."""
+    state = copy.deepcopy(previous) if isinstance(previous, dict) else {}
+    old_targets = state.get("targets", {})
+    if not isinstance(old_targets, dict):
+        old_targets = {}
+    state.update(version=STATE_VERSION, targets_fingerprint=fingerprint,
+                 status_semantics=STATUS_SEMANTICS)
+    for target in targets:
+        key = "%s/%s" % (target.guild_id, target.channel_id)
+        if key not in old_targets:
+            old_targets[key] = target_entry(target)
+    state["targets"] = old_targets
+    # Keep rotation progress; no native DB checkpoint is ever changed here.
+    cursor = state.get("cursor", 0)
+    state["cursor"] = cursor if isinstance(cursor, int) and cursor >= 0 else 0
+    return state
+
+
 def read_state(path):
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -561,7 +735,8 @@ class Supervisor(object):
                  expected_counts=EXPECTED_COUNTS,
                  easycop_guild_id=EASYCOP_GUILD_ID,
                  popen=subprocess.Popen, external_check=None,
-                 env=None, clock=time.monotonic):
+                 env=None, clock=time.monotonic, discovery_reports=None):
+        self.discovery_reports = discovery_reports
         self.paths = paths
         self.budget_seconds = float(budget_seconds)
         self.child_seconds = float(child_seconds)
@@ -833,19 +1008,39 @@ class Supervisor(object):
             return EXIT_OK
 
         targets = None
-        manifest_error = None
         try:
             document = load_manifest(self.paths.manifest)
             validate_manifest(document, self.expected_guilds,
                               self.expected_counts, self.easycop_guild_id)
-            targets = flatten_targets(document)
-        except ManifestError as exc:
-            manifest_error = str(exc)
-            self._log("manifest_invalid", manifest=self.paths.manifest,
-                      error=manifest_error,
-                      action="selected work skipped; EasyCop still runs")
+            reports = {}
+            for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+                cmd = discovery_command(self.paths, gid)
+                result = self._run_child(cmd, 120.0,
+                                        Target(gid, "metadata", gid, "metadata", "metadata"))
+                if result["status"] != STATUS_EXIT_ZERO:
+                    raise ManifestError("metadata discovery failed for guild %s (%s)" % (gid, result["status"]))
+                with open(result["child_log"], encoding="utf-8") as handle:
+                    reports[gid] = json.load(handle)
+            effective, plan = collection_plan(document, reports)
+            targets = flatten_targets(effective)
+            easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
+                           if d["collect"] and d["type"] in (0, 5, 10, 11)]
+            if not easycop_ids:
+                raise ManifestError("empty EasyCop inventory; no unrestricted fallback")
+            # Save only after both current reports and selection are validated.
+            write_state_atomic(self.paths.state + ".discovery.json", plan)
+            self._log("discovery_plan", path=self.paths.state + ".discovery.json",
+                      targets=len(targets), thread_coverage_complete=False)
+        except (ManifestError, ValueError, OSError, TypeError, KeyError) as exc:
+            self._log("discovery_failed", error=str(exc),
+                      action="no message sync; previous selection/cursors preserved")
+            self._log("cycle_end", exit_code=4, targets_attempted=0,
+                      elapsed_seconds=round(self._clock() - cycle_started, 3),
+                      skipped="discovery_failed")
+            self._prune_child_logs()
+            return 4
 
-        easycop_cmd = easycop_command(self.paths, self.easycop_guild_id)
+        easycop_cmd = easycop_command(self.paths, self.easycop_guild_id, easycop_ids)
         try:
             easycop = self._run_child(easycop_cmd, None, None)
         except Exception as exc:  # could not even start the native process
@@ -862,18 +1057,20 @@ class Supervisor(object):
                   command=easycop["command"])
         easycop_failed = easycop["exit_code"] != 0
 
+        selected_failed = False
         attempted = 0
         if targets:
             try:
                 attempted = self._run_selected(targets)
             except Exception as exc:  # never let selected work break the cycle
+                selected_failed = True
                 self._log("selected_phase_error",
                           error="%s: %s" % (type(exc).__name__, exc))
 
         if easycop_failed:
             exit_code = EXIT_EASYCOP_FAILED
-        elif manifest_error is not None:
-            exit_code = EXIT_MANIFEST_INVALID
+        elif selected_failed:
+            exit_code = 4
         else:
             exit_code = EXIT_OK
         self._prune_child_logs()
@@ -887,7 +1084,7 @@ class Supervisor(object):
         fingerprint = targets_fingerprint(targets)
         if (state.get("targets_fingerprint") != fingerprint
                 or not isinstance(state.get("targets"), dict)):
-            state = new_state(fingerprint, targets)
+            state = reconcile_state(state, fingerprint, targets)
         state["status_semantics"] = STATUS_SEMANTICS
         cursor = state.get("cursor", 0)
         if not isinstance(cursor, int) or cursor < 0:
@@ -976,19 +1173,27 @@ class Supervisor(object):
         out("budget_seconds=%s child_seconds=%s max_targets=%s"
             % (self.budget_seconds, self.child_seconds, self.max_targets))
 
-        easycop = easycop_command(self.paths, self.easycop_guild_id)
+        out("step 0 — metadata-only discovery before any message collection:")
+        for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+            out("  " + _quote(discovery_command(self.paths, gid)))
+        easycop = None
         try:
             document = load_manifest(self.paths.manifest)
             validate_manifest(document, self.expected_guilds,
                               self.expected_counts, self.easycop_guild_id)
+            if self.discovery_reports is not None:
+                document, plan = collection_plan(document, self.discovery_reports)
+                easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
+                               if d["collect"] and d["type"] in (0, 5, 10, 11)]
+                easycop = easycop_command(self.paths, self.easycop_guild_id, easycop_ids)
+                out("offline fixture decisions: " + json.dumps(plan, sort_keys=True))
+            else:
+                out("BASELINE PREVIEW ONLY: new targets/rename/move require current discovery; not a live collection plan")
             targets = flatten_targets(document)
         except ManifestError as exc:
             out("")
             out("MANIFEST INVALID: %s" % exc)
-            out("selected work would be skipped entirely this cycle")
-            out("")
-            out("step 1 — existing collection (unfiltered, no time limit):")
-            out("  " + _quote(easycop))
+            out("no collection: invalid manifest/discovery stops the cycle")
             return EXIT_MANIFEST_INVALID
 
         state = read_state(self.paths.state)
@@ -999,8 +1204,9 @@ class Supervisor(object):
         cursor = cursor % len(targets)
 
         out("")
-        out("step 1 — existing collection (unfiltered, no time limit):")
-        out("  " + _quote(easycop))
+        out("step 1 — EasyCop explicit inventory (no time limit):")
+        out("  " + _quote(easycop) if easycop else
+            "  [resolved only after current metadata discovery; no unrestricted fallback]")
         out("")
         out("step 2 — selected rotation: %d targets, resuming at index %d,"
             " one native child at a time" % (len(targets), cursor))
@@ -1055,6 +1261,7 @@ def parse_args(argv):
     parser.add_argument("--dry-run", action="store_true",
                         help="print the exact planned commands and target order, "
                              "launch nothing, write nothing")
+    parser.add_argument("--discovery-fixture", help="offline metadata JSON; requires --dry-run; never used for live collection")
     parser.add_argument("--budget-seconds", type=_positive_float,
                         default=DEFAULT_BUDGET_SECONDS,
                         help="total seconds for selected work per cycle "
@@ -1070,11 +1277,21 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    reports = None
+    if args.discovery_fixture:
+        if not args.dry_run:
+            sys.stderr.write("--discovery-fixture requires --dry-run\n")
+            return EXIT_MANIFEST_INVALID
+        try:
+            reports = load_manifest(args.discovery_fixture)
+        except ManifestError as exc:
+            sys.stderr.write(str(exc) + "\n")
+            return EXIT_MANIFEST_INVALID
     supervisor = Supervisor(paths=DEFAULT_PATHS,
                             budget_seconds=args.budget_seconds,
                             child_seconds=args.child_seconds,
                             max_targets=args.max_targets,
-                            dry_run=args.dry_run)
+                            dry_run=args.dry_run, discovery_reports=reports)
     return supervisor.run()
 
 

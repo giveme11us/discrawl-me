@@ -111,6 +111,7 @@ func (r *runtime) runSync(args []string) error {
 	guildsFlag := fs.String("guilds", "", "")
 	guildFlag := fs.String("guild", "", "")
 	includeDMs := fs.Bool("include-dms", false, "")
+	refreshMembers := fs.Bool("refresh-members", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -127,13 +128,14 @@ func (r *runtime) runSync(args []string) error {
 		return usageErr(err)
 	}
 	opts := syncer.SyncOptions{
-		Full:        *full,
-		GuildIDs:    guildIDs,
-		ChannelIDs:  csvList(*channels),
-		Concurrency: *concurrency,
-		Since:       sinceTime,
-		Embeddings:  *withEmbeddings,
-		IncludeDMs:  *includeDMs,
+		Full:           *full,
+		GuildIDs:       guildIDs,
+		ChannelIDs:     csvList(*channels),
+		Concurrency:    *concurrency,
+		Since:          sinceTime,
+		Embeddings:     *withEmbeddings,
+		IncludeDMs:     *includeDMs,
+		RefreshMembers: *refreshMembers,
 	}
 	stats, err := r.syncer.Sync(r.ctx, opts)
 	if err != nil {

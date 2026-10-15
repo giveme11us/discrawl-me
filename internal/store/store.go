@@ -101,6 +101,7 @@ type MemberRow struct {
 }
 
 type ChannelRow struct {
+	RawJSON          string    `json:"-"`
 	ID               string    `json:"id"`
 	GuildID          string    `json:"guild_id"`
 	ParentID         string    `json:"parent_id,omitempty"`

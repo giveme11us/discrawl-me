@@ -250,7 +250,7 @@ func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, err
 	args := []any{}
 	query := `
 		select id, guild_id, coalesce(parent_id, ''), kind, name, coalesce(topic, ''), position,
-		       is_nsfw, is_archived, is_locked, is_private_thread, coalesce(thread_parent_id, ''), coalesce(archive_timestamp, '')
+		       is_nsfw, is_archived, is_locked, is_private_thread, coalesce(thread_parent_id, ''), coalesce(archive_timestamp, ''), raw_json
 		from channels
 	`
 	if guildID != "" {
@@ -271,7 +271,7 @@ func (s *Store) Channels(ctx context.Context, guildID string) ([]ChannelRow, err
 		var nsfw int
 		var priv int
 		var archiveTS string
-		if err := rows.Scan(&row.ID, &row.GuildID, &row.ParentID, &row.Kind, &row.Name, &row.Topic, &row.Position, &nsfw, &archived, &locked, &priv, &row.ThreadParentID, &archiveTS); err != nil {
+		if err := rows.Scan(&row.ID, &row.GuildID, &row.ParentID, &row.Kind, &row.Name, &row.Topic, &row.Position, &nsfw, &archived, &locked, &priv, &row.ThreadParentID, &archiveTS, &row.RawJSON); err != nil {
 			return nil, err
 		}
 		row.IsNSFW = nsfw == 1

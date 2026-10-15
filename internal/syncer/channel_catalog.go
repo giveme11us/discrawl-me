@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -208,6 +209,13 @@ func selectStoredChannels(rows []store.ChannelRow, requested map[string]struct{}
 }
 
 func channelFromRow(row store.ChannelRow) *discordgo.Channel {
+	// Metadata discovery refreshes raw_json before targeted sync. Preserve the
+	// live last_message_id so a formerly empty completed channel notices its
+	// first message without deleting or resetting any checkpoint.
+	var raw struct {
+		LastMessageID string `json:"last_message_id"`
+	}
+	_ = json.Unmarshal([]byte(row.RawJSON), &raw)
 	channelType := channelTypeFromKind(row.Kind)
 	var threadMeta *discordgo.ThreadMetadata
 	if strings.HasPrefix(row.Kind, "thread_") {
@@ -219,6 +227,7 @@ func channelFromRow(row store.ChannelRow) *discordgo.Channel {
 	}
 	return &discordgo.Channel{
 		ID:             row.ID,
+		LastMessageID:  raw.LastMessageID,
 		GuildID:        row.GuildID,
 		ParentID:       row.ParentID,
 		Name:           row.Name,

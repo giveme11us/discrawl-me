@@ -42,14 +42,15 @@ type Syncer struct {
 }
 
 type SyncOptions struct {
-	Full         bool
-	GuildIDs     []string
-	ChannelIDs   []string
-	Concurrency  int
-	Since        time.Time
-	Embeddings   bool
-	RepairReason string
-	IncludeDMs   bool
+	Full           bool
+	GuildIDs       []string
+	ChannelIDs     []string
+	Concurrency    int
+	Since          time.Time
+	Embeddings     bool
+	RepairReason   string
+	IncludeDMs     bool
+	RefreshMembers bool
 }
 
 type SyncStats struct {
@@ -182,7 +183,7 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 		}
 	}
 
-	if !targeted {
+	if !targeted || opts.RefreshMembers {
 		stats.Members = s.refreshGuildMembers(ctx, guildID)
 	}
 

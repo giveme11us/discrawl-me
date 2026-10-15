@@ -119,6 +119,8 @@ func (r *runtime) dispatch(rest []string) error {
 	switch rest[0] {
 	case "init":
 		return r.runInit(rest[1:])
+	case "discover":
+		return r.withServices(true, func() error { return r.runDiscover(rest[1:]) })
 	case "sync":
 		return r.withServices(true, func() error { return r.runSync(rest[1:]) })
 	case "tail":
