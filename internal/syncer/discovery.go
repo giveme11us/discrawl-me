@@ -3,7 +3,9 @@ package syncer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
@@ -20,18 +22,41 @@ type DiscoveryReport struct {
 	Coverage      DiscoveryCoverage    `json:"coverage"`
 }
 type DiscoveryCoverage struct {
-	TopLevel        string            `json:"top_level"`
-	ActiveThreads   string            `json:"active_threads"`
-	PublicArchives  map[string]string `json:"public_archives"`
-	PrivateArchives string            `json:"private_archives"`
-	Complete        bool              `json:"complete"`
+	TopLevel            string            `json:"top_level"`
+	ActiveThreads       string            `json:"active_threads"`
+	ParentActiveThreads map[string]string `json:"parent_active_threads"`
+	PublicArchives      map[string]string `json:"public_archives"`
+	UnavailableReasons  map[string]string `json:"unavailable_reasons,omitempty"`
+	PrivateArchives     string            `json:"private_archives"`
+	Complete            bool              `json:"complete"`
+}
+
+var discoveryAPIStatus = regexp.MustCompile(`discord API error ([1-5][0-9]{2}):`)
+
+// Keep bounded reasons, never API bodies/URLs or other potentially sensitive
+// transport text. A status records an observed denial, not its assumed cause.
+func discoveryFailureReason(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "request_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "request_deadline_exceeded"
+	}
+	var rest *discordgo.RESTError
+	if errors.As(err, &rest) && rest.Response != nil {
+		return fmt.Sprintf("http_%d", rest.Response.StatusCode)
+	}
+	if match := discoveryAPIStatus.FindStringSubmatch(err.Error()); match != nil {
+		return "http_" + match[1]
+	}
+	return "request_failed"
 }
 
 // DiscoverChannels only fetches metadata. It never fetches messages/members,
-// opens Gateway, or changes message cursors. Public archive scans are opt-in
-// by explicit parent ID; failures remain visible instead of claiming coverage.
-func (s *Syncer) DiscoverChannels(ctx context.Context, guildID string, archiveParents []string) (DiscoveryReport, error) {
-	report := DiscoveryReport{GuildID: guildID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Channels: []*discordgo.Channel{}, CachedThreads: []*discordgo.Channel{}, Coverage: DiscoveryCoverage{TopLevel: "observed", ActiveThreads: "observed", PublicArchives: map[string]string{}, PrivateArchives: "not_requested", Complete: false}}
+// opens Gateway, or changes message cursors. Public active/archive scans are
+// opt-in by explicit parent ID; failures remain visible, never full coverage.
+func (s *Syncer) DiscoverChannels(ctx context.Context, guildID string, threadParents []string) (DiscoveryReport, error) {
+	report := DiscoveryReport{GuildID: guildID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Channels: []*discordgo.Channel{}, CachedThreads: []*discordgo.Channel{}, Coverage: DiscoveryCoverage{TopLevel: "observed", ActiveThreads: "observed", ParentActiveThreads: map[string]string{}, PublicArchives: map[string]string{}, UnavailableReasons: map[string]string{}, PrivateArchives: "not_requested", Complete: false}}
 	if s.store == nil {
 		return report, fmt.Errorf("discovery requires the existing archive store")
 	}
@@ -66,6 +91,7 @@ func (s *Syncer) DiscoverChannels(ctx context.Context, guildID string, archivePa
 	threads, err := s.client.GuildThreadsActive(ctx, guildID)
 	if err != nil {
 		report.Coverage.ActiveThreads = "unavailable"
+		report.Coverage.UnavailableReasons["guild_active"] = discoveryFailureReason(err)
 	} else {
 		for _, ch := range threads {
 			if err := add(ch); err != nil {
@@ -73,13 +99,34 @@ func (s *Syncer) DiscoverChannels(ctx context.Context, guildID string, archivePa
 			}
 		}
 	}
-	for _, id := range uniqueIDs(archiveParents) {
+	// Validate the explicit scope against current top-level metadata before any
+	// parent request. Never use a cached parent as discovery authorization.
+	parents := uniqueIDs(threadParents)
+	for _, id := range parents {
 		if !isThreadParent(all[id]) {
-			return report, fmt.Errorf("archive parent %s is not a current guild text/news/forum", id)
+			return report, fmt.Errorf("thread parent %s is not a current guild text/news/forum", id)
+		}
+	}
+	for _, id := range parents {
+		active, err := s.client.ThreadsActive(ctx, id)
+		if err != nil {
+			report.Coverage.ParentActiveThreads[id] = "unavailable"
+			report.Coverage.UnavailableReasons["parent_active:"+id] = discoveryFailureReason(err)
+		} else {
+			report.Coverage.ParentActiveThreads[id] = "observed"
+			for _, ch := range active {
+				if ch == nil || ch.ParentID != id || !isThreadChannel(ch) {
+					return report, fmt.Errorf("invalid active thread parent")
+				}
+				if err := add(ch); err != nil {
+					return report, err
+				}
+			}
 		}
 		archived, err := s.client.ThreadsArchived(ctx, id, false)
 		if err != nil {
 			report.Coverage.PublicArchives[id] = "unavailable"
+			report.Coverage.UnavailableReasons["public_archive:"+id] = discoveryFailureReason(err)
 			continue
 		}
 		report.Coverage.PublicArchives[id] = "observed"

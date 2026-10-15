@@ -17,11 +17,18 @@ A guild must be explicit; there is no `--all` fallback.
 The JSON distinguishes current `channels` from public `cached_threads` that
 were not observed this cycle. Missing catalog IDs are not deleted. Active-route
 failure is `coverage.active_threads=unavailable`, not success/full coverage.
-`--thread-parents CSV` optionally scans public archives for those current text,
-news or forum parents only. Private archives are not requested. Each archive
-parent has its own observed/unavailable coverage result. `coverage.complete`
-remains false: API identity/access and unsurveyed parents prevent a full claim.
-The runner does not enable archive scans in the metadata phase by default.
+`--thread-parents CSV` scans public active threads AND public archives for those
+current text, news or forum parents only. These per-parent routes recover posts
+missing from the guild active list, including an already archived public post
+never cached. Private archives are not requested; private threads returned by
+any route are discarded. `coverage.parent_active_threads` and `public_archives`
+record each requested parent's observed/unavailable status. Missing keys mean
+not requested, not success. `unavailable_reasons` records only bounded
+`http_STATUS`, cancellation/deadline or `request_failed` reasons; raw error
+bodies/URLs are never copied into coverage. A status does not identify why the
+API/identity denied access. `coverage.complete` always remains false; successful
+routes mean observations, not a guarantee of all accessible threads.
+The runner enables these scans in the metadata phase for admitted parents only.
 The discovery-owned plan is the only message allowlist for EasyCop/Dustify;
 implicit selected-forum crawling is disabled for these invocations.
 
@@ -29,11 +36,30 @@ implicit selected-forum crawling is disabled for these invocations.
 
 The existing run-selected-sync.py keeps its lifecycle lock, external-sync guard,
 serial child handling, 180-second selected budget and 45-second slices.
-Before any messages, it now runs metadata discovery for EasyCop and Dustify
-(maximum 120 seconds per discovery child), validates both JSON reports, then
-atomically saves `selected-sync-state.json.discovery.json`. Invalid/missing
-inventory or an empty EasyCop selection stops with exit 4, preserving the old
-plan and rotation state. There is never `--channels ''` or all-Dustify fallback.
+Before any messages, it runs TWO metadata stages in EasyCop and Dustify:
+
+1. discover current top-level/guild-active inventory in both guilds;
+2. compute a provisional plan using the same manifest/category/type/role rules;
+   only current admitted text/news/forum parents authorize further metadata;
+3. call native `discover --thread-parents CSV` for those explicit parents in
+   each guild, collecting public active/archive metadata (never messages);
+4. validate the resulting current reports, rebuild the final message plan and
+   atomically save `selected-sync-state.json.discovery.json`.
+
+Top-level children retain a 120-second limit. Parent metadata children have a
+bounded `min(1800, 120 + 10 * number_of_unique_parents)` seconds window, because
+at least two paced requests per parent cannot fit a fixed 120-second limit for
+108 parents at the native default minimum pacing. Pagination/permissions/live
+duration are NOT attested by offline tests. The lock remains held throughout;
+a later scheduled invocation skips rather than overlapping a long cycle. This
+may delay freshness and must be measured before any authorized installation.
+The 180/45-second selected-message budgets are unchanged. A parent appearing
+between metadata stages is only scanned on a following cycle if still admitted.
+Invalid/missing inventory, failed/timed-out parent discovery or an empty EasyCop
+selection stops with exit 4, preserving the old plan and rotation state. There
+is never `--channels ''` or all-Dustify fallback. Endpoint-specific denials in a
+successful report retain explicit partial coverage; they are not a failed child
+and do not promote cached metadata to fresh.
 
 The APPROVED INPUT manifest remains strictly validated at 35 SD / 108 Dustify
 seed channels. Those counts are not a cap or a hardcoded list of future targets.
@@ -74,9 +100,15 @@ the native catalog/message phase, whether targets are cached or resolved live.
 A selected forum does NOT authorize its posts, even if a post appears after
 discovery. Known eligible posts are separate explicit targets; unknown or
 excluded posts cannot bypass the plan via forum ancestry. Missing explicit
-threads are not resolved by a broad archive crawl. Consequently archived posts
-not observed or cached can be missed; thread coverage remains partial, never
-complete. The native legacy default and SD forum expansion are unchanged.
+threads are not resolved by a broad archive crawl during message sync. Already
+archived public posts not cached are now discoverable BEFORE the plan through
+the metadata-only parent routes above, including when guild-active is unavailable
+or omits them. A post created after its parent's metadata scan waits for another
+cycle if still observable. Private/API-denied/unreturned posts and parents not
+admitted this cycle remain uncovered; cached observations are not fresh. This
+restores public parent discovery without reintroducing the old implicit/private
+message-phase expansion. Coverage remains partial, never complete. The native
+legacy default and SD forum expansion are unchanged.
 `--exact-channels` requires a non-empty channel list and DMs disabled.
 
 EasyCop retains its all-guild editorial policy but the runner now passes an

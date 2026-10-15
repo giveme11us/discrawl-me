@@ -170,6 +170,23 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaises(r.ManifestError): r.discovery_command(r.DEFAULT_PATHS, SD)
 
 class CycleTests(unittest.TestCase):
+    def test_metadata_timeout_scales_with_unique_parents_and_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "metadata.json"
+            log.write_text("{}")
+            sup = r.Supervisor()
+            calls = []
+            def metadata_child(command, timeout, target):
+                calls.append((command, timeout))
+                return {"status": r.STATUS_EXIT_ZERO, "child_log": str(log)}
+            sup._run_child = metadata_child
+            sup._discover(DU)
+            sup._discover(DU, [sid(1), sid(2), sid(1)])
+            sup._discover(DU, [sid(n) for n in range(200)])
+            self.assertEqual([timeout for _, timeout in calls], [120.0, 140.0, 1800.0])
+            self.assertNotIn("--thread-parents", calls[0][0])
+            self.assertEqual(calls[1][0][-1], sid(1) + "," + sid(2))
+
     def test_cycle_discovery_before_sync_and_error_preserves_state(self):
         doc, reports = fixtures()
         with tempfile.TemporaryDirectory() as tmp:
@@ -195,9 +212,10 @@ class CycleTests(unittest.TestCase):
             sup = FixtureSupervisor(paths=paths, expected_counts={SD:1, DU:2}, external_check=lambda _:[], max_targets=2)
             sup.commands=[]
             self.assertEqual(sup.run(), 0)
-            self.assertTrue(all("discover" in c for c in sup.commands[:2]))
-            self.assertTrue(all("--channels" in c for c in sup.commands[2:]))
-            self.assertTrue(all("--include-dms=false" in c for c in sup.commands[2:]))
+            self.assertTrue(all("discover" in c for c in sup.commands[:4]))
+            self.assertTrue(all("--thread-parents" in c for c in sup.commands[2:4]))
+            self.assertTrue(all("--channels" in c for c in sup.commands[4:]))
+            self.assertTrue(all("--include-dms=false" in c for c in sup.commands[4:]))
             old_state = Path(paths.state).read_bytes()
             old_plan = Path(paths.state + ".discovery.json").read_bytes()
             sup.fail=True; sup.commands=[]
@@ -209,6 +227,106 @@ class CycleTests(unittest.TestCase):
             reports[EC]["channels"] = []
             self.assertEqual(sup.run(), 4)
             self.assertEqual(Path(paths.state).read_bytes(), old_state)
+            self.assertEqual(Path(paths.state + ".discovery.json").read_bytes(), old_plan)
+
+    def test_public_parent_metadata_precedes_plan_archived_uncached_and_exact_sync(self):
+        doc, top = fixtures()
+        # Newly observed eligible forum parents are inferred from existing
+        # category/role evidence too, not only the original manifest IDs.
+        top[EC]["channels"].append(channel(30, EC, "new-forum", 15, 20))
+        top[DU]["channels"].append(channel(70, DU, "pokemon-releases", 15, 9))
+        archived = {EC: [channel(31, EC, "new-archived-ec", 11, 30, True)],
+                    DU: [channel(40, DU, "new-archived-pokemon", 11, 3, True),
+                         channel(41, DU, "new-archived-funko", 11, 3, True),
+                         channel(71, DU, "new-parent-archive", 11, 70, True)]}
+        fallback_active = channel(42, DU, "parent-only-active", 11, 3)
+        self.assertTrue(all(not report.get("cached_threads") for report in top.values()))
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            paths = r.Paths("fixture-native", str(p/"config"), str(p/"manifest"), str(p/"state"),
+                            str(p/"lock"), str(p/"log"), str(p/"children"))
+            Path(paths.manifest).write_text(json.dumps(doc))
+            class ForumSupervisor(r.Supervisor):
+                fail_parent_guild = None
+                failure_status = r.STATUS_EXIT_NONZERO
+                malformed_parent = False
+                def _run_child(self, command, timeout, target, on_reap=None):
+                    self.commands.append(command)
+                    gid = command[command.index("--guild") + 1]
+                    parent_phase = "--thread-parents" in command
+                    failed = parent_phase and gid == self.fail_parent_guild
+                    log = p / ("metadata-" + gid)
+                    if "discover" in command:
+                        report = copy.deepcopy(top[gid])
+                        if parent_phase:
+                            requested = command[command.index("--thread-parents") + 1].split(",")
+                            self.asserted_parents[gid] = requested
+                            report["channels"] += [ch for ch in archived[gid] if ch["parent_id"] in requested]
+                            if gid == DU and sid(3) in requested:
+                                report["channels"].append(fallback_active)
+                            report["coverage"].update(
+                                parent_active_threads={cid: "observed" for cid in requested},
+                                public_archives={cid: "observed" for cid in requested},
+                                unavailable_reasons={"guild_active": "http_403"}, private_archives="not_requested")
+                            if self.malformed_parent:
+                                report["guild_id"] = SD
+                        log.write_text(json.dumps(report))
+                    result = {"status": self.failure_status if failed else r.STATUS_EXIT_ZERO,
+                              "exit_code": 1 if failed else 0, "child_log": str(log),
+                              "duration_seconds": 0, "pid_child": None, "command": command,
+                              "started_at": "fixture", "finished_at": "fixture", "timeout_seconds": timeout}
+                    if on_reap:
+                        on_reap(result)
+                    return result
+            sup = ForumSupervisor(paths=paths, expected_counts={SD: 1, DU: 2},
+                                  external_check=lambda _: [], max_targets=100)
+            sup.commands = []; sup.asserted_parents = {}
+            self.assertEqual(sup.run(), 0)
+            plan = json.loads(Path(paths.state + ".discovery.json").read_text())
+            self.assertIn(sid(40), decisions(plan, DU), "uncached public archive must be discovered before selection")
+            for gid, cids in ((EC, (31,)), (DU, (40, 42, 71))):
+                for cid in cids:
+                    self.assertTrue(decisions(plan, gid)[sid(cid)]["collect"])
+                    self.assertEqual(decisions(plan, gid)[sid(cid)]["freshness"], "observed")
+            self.assertFalse(decisions(plan, DU)[sid(41)]["collect"])
+            self.assertEqual(decisions(plan, DU)[sid(40)]["room_state"], "archived_thread")
+            self.assertEqual(sup.asserted_parents, {EC: [sid(21), sid(23), sid(30)],
+                                                   DU: [sid(2), sid(3), sid(4), sid(70)]})
+            self.assertTrue(all("discover" in c for c in sup.commands[:4]))
+            syncs = sup.commands[4:]
+            self.assertTrue(syncs)
+            self.assertTrue(all("sync" in c and "--channels" in c for c in syncs))
+            selected_ids = {cid for c in syncs for cid in c[c.index("--channels") + 1].split(",")}
+            self.assertTrue({sid(31), sid(40), sid(42), sid(71)} <= selected_ids)
+            self.assertNotIn(sid(41), selected_ids)
+            self.assertTrue(all("--exact-channels" in c for c in syncs if SD not in c))
+            self.assertEqual(plan["guilds"][DU]["coverage"]["active_threads"], "unavailable")
+            self.assertEqual(plan["guilds"][DU]["coverage"]["unavailable_reasons"], {"guild_active": "http_403"})
+            self.assertFalse(plan["thread_coverage_complete"])
+            # A second full cycle preserves the selection and increments attempts,
+            # never duplicates targets or resets an existing rotation entry.
+            old_state = r.read_state(paths.state)
+            old_plan = Path(paths.state + ".discovery.json").read_bytes()
+            sup.commands = []
+            self.assertEqual(sup.run(), 0)
+            self.assertEqual(Path(paths.state + ".discovery.json").read_bytes(), old_plan)
+            new_state = r.read_state(paths.state)
+            self.assertEqual(set(new_state["targets"]), set(old_state["targets"]))
+            for key in old_state["targets"]:
+                self.assertEqual(new_state["targets"][key]["attempts"], old_state["targets"][key]["attempts"] + 1)
+            # Failure in EITHER parent metadata child stops before all messages,
+            # retaining both the prior complete plan and the scheduler state.
+            saved_state = Path(paths.state).read_bytes()
+            for gid, status in ((EC, r.STATUS_EXIT_NONZERO), (DU, r.STATUS_TIMEOUT)):
+                sup.fail_parent_guild = gid; sup.failure_status = status; sup.commands = []
+                self.assertEqual(sup.run(), 4)
+                self.assertTrue(all("discover" in c for c in sup.commands))
+                self.assertEqual(Path(paths.state).read_bytes(), saved_state)
+                self.assertEqual(Path(paths.state + ".discovery.json").read_bytes(), old_plan)
+            sup.fail_parent_guild = None; sup.malformed_parent = True; sup.commands = []
+            self.assertEqual(sup.run(), 4)
+            self.assertTrue(all("discover" in c for c in sup.commands))
+            self.assertEqual(Path(paths.state).read_bytes(), saved_state)
             self.assertEqual(Path(paths.state + ".discovery.json").read_bytes(), old_plan)
 
     def test_cli_dry_run_fixture_no_native_or_state_writes(self):

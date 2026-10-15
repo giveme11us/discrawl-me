@@ -337,11 +337,27 @@ def _roles(name):
     return roles
 
 
-def discovery_command(paths, guild_id):
+def discovery_command(paths, guild_id, thread_parents=()):
     if guild_id not in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
         raise ManifestError("discovery outside the two authorized guilds")
-    return [paths.binary, "--config", paths.config, "--json", "--quiet",
-            "discover", "--guild", guild_id]
+    if not all(_is_snowflake(cid) for cid in thread_parents):
+        raise ManifestError("invalid explicit thread parent")
+    command = [paths.binary, "--config", paths.config, "--json", "--quiet",
+               "discover", "--guild", guild_id]
+    if thread_parents:
+        command += ["--thread-parents", ",".join(sorted(set(thread_parents)))]
+    return command
+
+
+def discovery_parent_ids(document, reports):
+    # Derive from CURRENT observed category/type/role evidence, not a static
+    # parent list or cached threads. This provisional plan authorizes metadata
+    # only; the final message plan is rebuilt after parent discovery.
+    _, provisional = collection_plan(document, reports)
+    return {gid: sorted(d["id"] for d in guild["decisions"]
+                        if d["collect"] and d["type"] in (0, 5, 15)
+                        and d["freshness"] == "observed")
+            for gid, guild in provisional["guilds"].items()}
 
 
 def collection_plan(document, reports):
@@ -984,6 +1000,22 @@ class Supervisor(object):
         raise _Interrupted("SIGTERM" if signum == signal.SIGTERM
                            else str(signum))
 
+    def _discover(self, guild_id, thread_parents=()):
+        command = discovery_command(self.paths, guild_id, thread_parents)
+        # The parent phase makes at least two paced requests per parent, plus
+        # archive pagination. A fixed 120 s would starve a 108-parent inventory
+        # before its first page at the native default pacing. Keep a bounded
+        # parent-scaled window; timeout still fails closed, never publishes a
+        # partial message plan. This does not change the selected-message budget.
+        timeout = min(1800.0, 120.0 + 10.0 * len(set(thread_parents)))
+        result = self._run_child(command, timeout,
+                                 Target(guild_id, "metadata", guild_id, "metadata", "metadata"))
+        if result["status"] != STATUS_EXIT_ZERO:
+            raise ManifestError("metadata discovery failed for guild %s (%s)"
+                                % (guild_id, result["status"]))
+        with open(result["child_log"], encoding="utf-8") as handle:
+            return json.load(handle)
+
     def _cycle(self):
         cycle_started = self._clock()
         self._log("cycle_start", manifest=self.paths.manifest,
@@ -1019,13 +1051,11 @@ class Supervisor(object):
                               self.expected_counts, self.easycop_guild_id)
             reports = {}
             for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
-                cmd = discovery_command(self.paths, gid)
-                result = self._run_child(cmd, 120.0,
-                                        Target(gid, "metadata", gid, "metadata", "metadata"))
-                if result["status"] != STATUS_EXIT_ZERO:
-                    raise ManifestError("metadata discovery failed for guild %s (%s)" % (gid, result["status"]))
-                with open(result["child_log"], encoding="utf-8") as handle:
-                    reports[gid] = json.load(handle)
+                reports[gid] = self._discover(gid)
+            parents = discovery_parent_ids(document, reports)
+            for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+                if parents[gid]:
+                    reports[gid] = self._discover(gid, parents[gid])
             effective, plan = collection_plan(document, reports)
             targets = flatten_targets(effective)
             easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
@@ -1187,6 +1217,11 @@ class Supervisor(object):
             validate_manifest(document, self.expected_guilds,
                               self.expected_counts, self.easycop_guild_id)
             if self.discovery_reports is not None:
+                parents = discovery_parent_ids(document, self.discovery_reports)
+                out("step 0b — public parent metadata, before the final message plan:")
+                for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+                    if parents[gid]:
+                        out("  " + _quote(discovery_command(self.paths, gid, parents[gid])))
                 document, plan = collection_plan(document, self.discovery_reports)
                 easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
                                if d["collect"] and d["type"] in (0, 5, 10, 11)]
@@ -1194,6 +1229,7 @@ class Supervisor(object):
                 out("offline fixture decisions: " + json.dumps(plan, sort_keys=True))
             else:
                 out("BASELINE PREVIEW ONLY: new targets/rename/move require current discovery; not a live collection plan")
+                out("step 0b — discover --thread-parents [resolved admitted public parents from step 0; no implicit message expansion]")
             targets = flatten_targets(document)
         except ManifestError as exc:
             out("")
