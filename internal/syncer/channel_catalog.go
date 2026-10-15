@@ -19,7 +19,7 @@ const (
 	channelCatalogIncremental
 )
 
-func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode) ([]*discordgo.Channel, bool, error) {
+func (s *Syncer) channelList(ctx context.Context, guildID string, requested []string, mode channelCatalogMode, exact bool) ([]*discordgo.Channel, bool, error) {
 	if len(requested) == 0 {
 		channels, err := s.liveChannelList(ctx, guildID, mode)
 		if err != nil {
@@ -36,7 +36,7 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 			return nil, false, err
 		}
 		storedByID = selectStoredChannels(rows, requestedSet)
-		if canUseStoredTargets(storedByID, requestedSet) {
+		if (exact && len(storedByID) == len(requestedSet)) || canUseStoredTargets(storedByID, requestedSet) {
 			selected := selectRequestedChannels(nil, storedByID, requestedSet)
 			return selected, true, nil
 		}
@@ -49,6 +49,19 @@ func (s *Syncer) channelList(ctx context.Context, guildID string, requested []st
 	allChannels := make(map[string]*discordgo.Channel, len(topLevel))
 	for _, channel := range topLevel {
 		allChannels[channel.ID] = channel
+	}
+
+	if exact {
+		// A discovery-owned plan must not expand a forum into unselected posts.
+		// Nil live catalog prevents selectRequestedChannels' legacy expansion;
+		// explicitly named threads can still come from the metadata cache.
+		if storedByID == nil {
+			storedByID = make(map[string]*discordgo.Channel)
+		}
+		for id, channel := range allChannels {
+			storedByID[id] = channel
+		}
+		return selectRequestedChannels(nil, storedByID, requestedSet), true, nil
 	}
 
 	selected := selectRequestedChannels(allChannels, storedByID, requestedSet)

@@ -51,6 +51,7 @@ type SyncOptions struct {
 	RepairReason   string
 	IncludeDMs     bool
 	RefreshMembers bool
+	ExactChannels  bool
 }
 
 type SyncStats struct {
@@ -97,6 +98,9 @@ func (s *Syncer) DiscoverGuilds(ctx context.Context) ([]*discordgo.UserGuild, er
 }
 
 func (s *Syncer) Sync(ctx context.Context, opts SyncOptions) (SyncStats, error) {
+	if opts.ExactChannels && (len(opts.ChannelIDs) == 0 || opts.IncludeDMs) {
+		return SyncStats{}, fmt.Errorf("exact channels requires non-empty channel IDs and DMs disabled")
+	}
 	guilds, err := s.client.Guilds(ctx)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("list guilds: %w", err)
@@ -167,7 +171,7 @@ func (s *Syncer) syncGuild(ctx context.Context, guildID string, opts SyncOptions
 			catalogMode = channelCatalogIncremental
 		}
 	}
-	channelList, targeted, err := s.channelList(ctx, guildID, opts.ChannelIDs, catalogMode)
+	channelList, targeted, err := s.channelList(ctx, guildID, opts.ChannelIDs, catalogMode, opts.ExactChannels)
 	if err != nil {
 		return stats, err
 	}

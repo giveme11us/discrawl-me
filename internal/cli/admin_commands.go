@@ -112,6 +112,7 @@ func (r *runtime) runSync(args []string) error {
 	guildFlag := fs.String("guild", "", "")
 	includeDMs := fs.Bool("include-dms", false, "")
 	refreshMembers := fs.Bool("refresh-members", false, "")
+	exactChannels := fs.Bool("exact-channels", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -136,6 +137,7 @@ func (r *runtime) runSync(args []string) error {
 		Embeddings:     *withEmbeddings,
 		IncludeDMs:     *includeDMs,
 		RefreshMembers: *refreshMembers,
+		ExactChannels:  *exactChannels,
 	}
 	stats, err := r.syncer.Sync(r.ctx, opts)
 	if err != nil {

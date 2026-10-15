@@ -21,10 +21,12 @@ type metadataDiscord struct {
 func (f *metadataDiscord) GuildChannels(_ context.Context, gid string) ([]*discordgo.Channel, error) {
 	return []*discordgo.Channel{{ID: "700000000000000001", GuildID: gid, Name: "fixture", Type: discordgo.ChannelTypeGuildText}}, nil
 }
+
 func (f *metadataDiscord) ChannelMessages(context.Context, string, int, string, string) ([]*discordgo.Message, error) {
 	f.messageCalls++
 	return nil, nil
 }
+
 func TestDiscoverCLIUsesNativeMetadataOnly(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -50,4 +52,15 @@ func TestDiscoverCLIUsesNativeMetadataOnly(t *testing.T) {
 	rt.syncer = nil
 	require.Equal(t, 2, ExitCode(rt.runDiscover(nil)))
 	require.Equal(t, 2, ExitCode(rt.runDiscover([]string{"--guild", "422855027535642625", "--all"})))
+}
+
+func TestSyncCLIExactChannelsOption(t *testing.T) {
+	service := &fakeSyncService{}
+	rt := &runtime{ctx: context.Background(), cfg: config.Default(), syncer: service, stdout: &bytes.Buffer{}, json: true}
+	require.NoError(t, rt.runSync([]string{"--guild", "1347333602794541066", "--channels", "700000000000000001", "--exact-channels", "--include-dms=false"}))
+	require.True(t, service.lastSync.ExactChannels)
+	require.Equal(t, []string{"700000000000000001"}, service.lastSync.ChannelIDs)
+	require.False(t, service.lastSync.IncludeDMs)
+	require.NoError(t, rt.runSync([]string{"--guild", "1347333602794541066", "--channels", "700000000000000001"}))
+	require.False(t, service.lastSync.ExactChannels, "legacy callers retain forum expansion")
 }

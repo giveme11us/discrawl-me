@@ -59,6 +59,42 @@ def decisions(plan, gid):
     return {d["id"]: d for d in plan["guilds"][gid]["decisions"]}
 
 class SelectionTests(unittest.TestCase):
+    def test_new_subject_exclusions_cover_threads_and_preserve_legacy_seeds(self):
+        doc, reports = full_size_fixtures()
+        dust_entry = next(e for e in doc["new_guilds"] if e["guild_id"] == DU)
+        # All 108 synthetic legacy seeds are observed in their approved category.
+        reports[DU]["channels"].append(channel(60, DU, "General", 4))
+        for seed in dust_entry["channels"][2:]:
+            reports[DU]["channels"].append({"id": seed["id"], "guild_id": DU,
+                "name": seed["name"], "type": 0, "parent_id": sid(60)})
+        for offset, subject in enumerate(("funko", "topps", "vinyl")):
+            seed = dust_entry["channels"][2 + offset]
+            seed["name"] = "02-11-" + subject
+            current = next(c for c in reports[DU]["channels"] if c["id"] == seed["id"])
+            current["name"] = seed["name"]
+            # Text, news thread, public thread, cached archive and forum post.
+            for kind, parent, n in ((0, 1, 100), (10, 4, 110), (11, 4, 120), (11, 3, 130)):
+                reports[DU]["channels"].append(channel(n + offset, DU, seed["name"], kind, parent))
+            reports[DU].setdefault("cached_threads", []).append(
+                channel(140 + offset, DU, seed["name"], 11, 3, True))
+        reports[DU]["channels"].append(channel(150, DU, "new-pokemon-post", 11, 3))
+        original = copy.deepcopy(doc)
+        effective, plan = r.collection_plan(doc, reports)
+        selected = {t.channel_id for t in r.flatten_targets(effective) if t.guild_id == DU}
+        self.assertEqual(len(dust_entry["channels"]), 108)
+        self.assertTrue({s["id"] for s in dust_entry["channels"]} <= selected)
+        for d in decisions(plan, DU).values():
+            if d["id"] in {sid(n + offset) for n in (100, 110, 120, 130, 140) for offset in range(3)}:
+                self.assertFalse(d["collect"], d)
+                self.assertEqual(d["reason"], "excluded editorial subject")
+                self.assertNotIn(d["id"], selected)
+        self.assertTrue(decisions(plan, DU)[sid(8)]["collect"])
+        self.assertTrue(decisions(plan, DU)[sid(150)]["collect"])
+        self.assertEqual(doc, original)
+        self.assertIn("--exact-channels", r.selected_command(r.DEFAULT_PATHS, r.Target(DU, "", sid(3), "", "Forum")))
+        self.assertNotIn("--exact-channels", r.selected_command(r.DEFAULT_PATHS, r.Target(SD, "", sid(50), "", "Forum")))
+        self.assertIn("--exact-channels", r.easycop_command(r.DEFAULT_PATHS, EC, [sid(21)]))
+
     def test_new_relevant_both_guilds_and_excluded(self):
         doc, reports = fixtures()
         effective, plan = r.collection_plan(doc, reports)
@@ -179,6 +215,9 @@ class CycleTests(unittest.TestCase):
         # Exercise the actual CLI with full-sized synthetic approved manifest.
         doc, reports = full_size_fixtures()
         with tempfile.TemporaryDirectory() as tmp:
+            reports[DU]["channels"] += [channel(40, DU, "02-11-funko", 11, 4),
+                                         channel(41, DU, "new-pokemon-post", 11, 3),
+                                         channel(42, DU, "02-11-vinyl", 11, 3)]
             p=Path(tmp); (p/".config/discrawl-me").mkdir(parents=True)
             (p/".config/discrawl-me/selected-guilds.json").write_text(json.dumps(doc))
             (p/"metadata.json").write_text(json.dumps(reports))
@@ -188,6 +227,11 @@ class CycleTests(unittest.TestCase):
             self.assertEqual(proc.returncode,0,proc.stderr+proc.stdout)
             self.assertIn("offline fixture decisions:",proc.stdout)
             self.assertIn(sid(4),proc.stdout)
+            sync_lines = [line for line in proc.stdout.splitlines() if " sync " in line]
+            self.assertTrue(sync_lines)
+            self.assertFalse(any(sid(40) in line or sid(42) in line for line in sync_lines), proc.stdout)
+            self.assertTrue(any(sid(41) in line for line in sync_lines), proc.stdout)
+            self.assertTrue(all("--exact-channels" in line for line in sync_lines if DU in line or EC in line))
             self.assertEqual({str(f.relative_to(p)):f.read_bytes() for f in p.rglob("*") if f.is_file()},before)
             proc=subprocess.run(["python3",str(ROOT/"run-selected-sync.py"),"--discovery-fixture",str(p/"metadata.json")],
                                 env={**os.environ,"DISCRAWL_HOME":str(p)},capture_output=True,text=True)

@@ -413,6 +413,8 @@ def collection_plan(document, reports):
             if kind in (0, 5, 15, 10, 11):
                 if gid == EASYCOP_GUILD_ID:
                     allowed, reason = True, "existing EasyCop unfiltered collection"
+                elif cid not in seeds and (set(category.split("-")) | set(_label(ch["name"]).split("-"))) & {"topps", "funko", "vinyl"}:
+                    reason = "excluded editorial subject"
                 elif thread:
                     allowed = ch.get("parent_id") in selected
                     reason = "selected public parent" if allowed else "unselected thread parent"
@@ -424,8 +426,6 @@ def collection_plan(document, reports):
                     reason = "approved baseline; current category/type verified" if allowed else "review: baseline moved/category renamed/type changed"
                 elif ch.get("parent_id") not in admitted_parents or (category, kind) not in category_roles:
                     reason = "review: unknown/excluded category; no expansion"
-                elif set(category.split("-")) & {"topps", "funko", "vinyl"} or set(_label(ch["name"]).split("-")) & {"topps", "funko", "vinyl"}:
-                    reason = "excluded editorial subject"
                 elif _roles(ch["name"]) & category_roles[(category, kind)]:
                     allowed, reason = True, "new editorial role demonstrated by approved category seeds"
                 else:
@@ -460,7 +460,7 @@ def collection_plan(document, reports):
 def easycop_command(paths, guild_id=EASYCOP_GUILD_ID, channel_ids=None):
     """Preserve EasyCop's whole-guild policy, make the actual inventory explicit."""
     command = [paths.binary, "--config", paths.config, "sync", "--guild", guild_id,
-               "--include-dms=false", "--refresh-members"]
+               "--include-dms=false", "--refresh-members", "--exact-channels"]
     if channel_ids is None or not channel_ids or not all(_is_snowflake(cid) for cid in channel_ids):
         raise ManifestError("refusing empty/invalid explicit EasyCop selection")
     command += ["--channels", ",".join(channel_ids)]
@@ -482,7 +482,7 @@ def selected_command(paths, target):
     if not _is_snowflake(target.guild_id):
         raise ManifestError("refusing to build a sync command for guild id %r"
                             % (target.guild_id,))
-    return [
+    command = [
         paths.binary,
         "--config", paths.config,
         "sync",
@@ -492,6 +492,11 @@ def selected_command(paths, target):
         "--concurrency", "1",
         "--include-dms=false",
     ]
+    # Dustify's per-cycle plan, not forum ancestry, owns message selection.
+    # SD retains its original native forum behavior and exact seed command.
+    if target.guild_id == DUSTIFY_GUILD_ID:
+        command.append("--exact-channels")
+    return command
 
 
 # --------------------------------------------------------------------------

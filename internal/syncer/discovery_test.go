@@ -25,6 +25,7 @@ func (f *metadataClient) GuildChannels(ctx context.Context, id string) ([]*disco
 	}
 	return f.fakeClient.GuildChannels(ctx, id)
 }
+
 func (f *metadataClient) ThreadsArchived(ctx context.Context, id string, private bool) ([]*discordgo.Channel, error) {
 	if f.archiveErr != nil {
 		return nil, f.archiveErr

@@ -22,7 +22,8 @@ news or forum parents only. Private archives are not requested. Each archive
 parent has its own observed/unavailable coverage result. `coverage.complete`
 remains false: API identity/access and unsurveyed parents prevent a full claim.
 The runner does not enable archive scans in the metadata phase by default.
-Existing native selected-forum crawling remains in the message phase.
+The discovery-owned plan is the only message allowlist for EasyCop/Dustify;
+implicit selected-forum crawling is disabled for these invocations.
 
 ## Runner sequence and policy
 
@@ -63,11 +64,20 @@ No new channel in these subjects is inferred. This distinction is deliberate.
 Unknown categories/roles are recorded with `collect=false` and a review reason;
 there is no automatic notification or new bot/radar routine.
 
-Public/news threads inherit only an admitted parent. Cached public threads have
+NEW Dustify public/news threads require an admitted parent AND pass the same
+subject exclusion as new top-level targets, before inheriting that parent.
+The 108 explicit archive seeds keep their existing treatment. Cached public threads have
 `freshness=cached_unconfirmed`; this does not prove they still exist or are
-accessible. Private threads/DMs are not newly selected. Forum-parent targets keep
-the native public-post expansion already present in the collector; a parent
-slice's exit zero is not proof that all its posts were discovered or completed.
+accessible. Private threads/DMs are not newly selected. The runner passes
+`sync --exact-channels` for EasyCop/Dustify: only explicitly named IDs can enter
+the native catalog/message phase, whether targets are cached or resolved live.
+A selected forum does NOT authorize its posts, even if a post appears after
+discovery. Known eligible posts are separate explicit targets; unknown or
+excluded posts cannot bypass the plan via forum ancestry. Missing explicit
+threads are not resolved by a broad archive crawl. Consequently archived posts
+not observed or cached can be missed; thread coverage remains partial, never
+complete. The native legacy default and SD forum expansion are unchanged.
+`--exact-channels` requires a non-empty channel list and DMs disabled.
 
 EasyCop retains its all-guild editorial policy but the runner now passes an
 explicit non-empty list of current text/news and known public/news thread IDs,

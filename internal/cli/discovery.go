@@ -4,8 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/giveme11us/discrawl-me/internal/syncer"
 	"io"
+
+	"github.com/giveme11us/discrawl-me/internal/syncer"
 )
 
 func (r *runtime) runDiscover(args []string) error {
