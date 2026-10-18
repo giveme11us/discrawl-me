@@ -12,8 +12,10 @@ import (
 
 // ToolHandler handles MCP tool calls against the store.
 type ToolHandler struct {
-	store    *store.Store
-	embedder embedder.Provider
+	store        *store.Store
+	embedder     embedder.Provider
+	memoryNotice string
+	memoryStatus func(context.Context) (string, error)
 }
 
 // NewToolHandler creates a tool handler backed by the given store.
@@ -27,6 +29,10 @@ func NewToolHandler(s *store.Store, providers ...embedder.Provider) *ToolHandler
 
 // ListTools returns the MCP tool definitions.
 func (h *ToolHandler) ListTools() []map[string]any {
+	return h.selectiveTools(h.listTools())
+}
+
+func (h *ToolHandler) listTools() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "search_messages",
@@ -104,6 +110,10 @@ func (h *ToolHandler) ListTools() []map[string]any {
 
 // CallTool dispatches a tool call and returns the result as a string.
 func (h *ToolHandler) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	return h.callSelective(ctx, name, args, func() (string, error) { return h.callTool(ctx, name, args) })
+}
+
+func (h *ToolHandler) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
 	case "search_messages":
 		return h.searchMessages(ctx, args)
@@ -150,6 +160,11 @@ func (h *ToolHandler) searchMessages(ctx context.Context, args json.RawMessage) 
 	}
 	if params.GuildID != "" {
 		opts.GuildIDs = []string{params.GuildID}
+	}
+	if h.memoryStatus != nil {
+		// Selective memory indexes embed fields/snapshots: embed-only and
+		// forwarded messages have empty content but must stay searchable.
+		opts.IncludeEmpty = true
 	}
 
 	var results []store.SearchResult

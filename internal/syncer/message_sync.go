@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -226,6 +227,11 @@ func (s *Syncer) messageChannelContext(ctx context.Context) (context.Context, co
 }
 
 func (s *Syncer) syncChannelMessages(ctx context.Context, guildID string, channel *discordgo.Channel, full bool, embeddings bool, since time.Time, progress *messageSyncProgress) (int, error) {
+	if s.channelSinceFloor != nil {
+		if floor := s.channelSinceFloor(channel.ID); floor.After(since) {
+			since = floor
+		}
+	}
 	state, err := s.loadChannelSyncState(ctx, channel.ID)
 	if err != nil {
 		return 0, err
@@ -328,7 +334,11 @@ func (s *Syncer) syncFullChannelHistory(ctx context.Context, guildID string, cha
 			return messageCount, err
 		}
 	}
-	if !state.BackfillComplete {
+	if !state.BackfillComplete && !snowflakeOlderThan(state.BackfillCursor, since) {
+		// A backfill cursor already older than since (e.g. the selective
+		// rolling floor) would only fetch pages that filterMessagesSince
+		// discards: skip the request. Nothing older than since is ever
+		// re-downloaded and history_complete is not set.
 		before := state.BackfillCursor
 		if before == "" && state.Latest != "" {
 			before = state.Latest
@@ -520,6 +530,20 @@ func buildMessageMutations(ctx context.Context, messages []*discordgo.Message, g
 		newest = maxSnowflake(newest, message.ID)
 	}
 	return mutations, newest, nil
+}
+
+// snowflakeOlderThan reports whether a Discord snowflake id was created
+// strictly before since. Empty/invalid ids and a zero since return false.
+func snowflakeOlderThan(id string, since time.Time) bool {
+	if id == "" || since.IsZero() {
+		return false
+	}
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return false
+	}
+	created := time.UnixMilli(int64(n>>22) + 1420070400000)
+	return created.Before(since)
 }
 
 func filterMessagesSince(messages []*discordgo.Message, since time.Time) ([]*discordgo.Message, bool) {

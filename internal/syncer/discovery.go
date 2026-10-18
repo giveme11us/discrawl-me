@@ -123,7 +123,19 @@ func (s *Syncer) DiscoverChannels(ctx context.Context, guildID string, threadPar
 				}
 			}
 		}
-		archived, err := s.client.ThreadsArchived(ctx, id, false)
+		var archived []*discordgo.Channel
+		if pager, ok := s.client.(archivedPager); ok && s.archivePagesPerParent > 0 {
+			status, err := s.discoverArchivePages(ctx, guildID, id, pager, add)
+			if err != nil {
+				return report, err
+			}
+			report.Coverage.PublicArchives[id] = status.coverage
+			if status.reason != "" {
+				report.Coverage.UnavailableReasons["public_archive:"+id] = status.reason
+			}
+			continue
+		}
+		archived, err = s.client.ThreadsArchived(ctx, id, false)
 		if err != nil {
 			report.Coverage.PublicArchives[id] = "unavailable"
 			report.Coverage.UnavailableReasons["public_archive:"+id] = discoveryFailureReason(err)

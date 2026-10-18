@@ -165,14 +165,16 @@ func (s *Store) GetConversation(ctx context.Context, messageID string, before, a
 		from messages m
 		left join channels c on c.id = m.channel_id
 		where m.channel_id = ?
-		and m.created_at >= (
+		-- coalesce: a channel with fewer stored messages than before/after
+		-- (common in selective memory) must not turn into a false "no results".
+		and m.created_at >= coalesce((
 			select created_at from messages where channel_id = ? and created_at <= ?
 			order by created_at desc limit 1 offset ?
-		)
-		and m.created_at <= (
+		), '')
+		and m.created_at <= coalesce((
 			select created_at from messages where channel_id = ? and created_at >= ?
 			order by created_at asc limit 1 offset ?
-		)
+		), '9999')
 		order by m.created_at asc
 	`
 	rows, err := s.db.QueryContext(ctx, query,

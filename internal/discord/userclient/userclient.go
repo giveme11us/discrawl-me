@@ -170,6 +170,32 @@ func (c *UserClient) ThreadsArchived(ctx context.Context, channelID string, priv
 	}
 }
 
+// ThreadsArchivedPage fetches ONE page of PUBLIC archived threads for a
+// channel, before an archive timestamp cursor ("" = newest). It returns the
+// threads, whether more pages exist and the cursor for the next page. Used by
+// bounded, resumable discovery; the private archive is never requested here.
+func (c *UserClient) ThreadsArchivedPage(ctx context.Context, channelID, before string, limit int) ([]*discordgo.Channel, bool, string, error) {
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	path := fmt.Sprintf("/channels/%s/threads/archived/public?limit=%d", channelID, limit)
+	if before != "" {
+		path += "&before=" + before
+	}
+	var list discordgo.ThreadsList
+	if err := c.getJSON(ctx, path, &list); err != nil {
+		return nil, false, "", fmt.Errorf("fetch archived public threads page for channel %s: %w", channelID, err)
+	}
+	if len(list.Threads) == 0 {
+		return nil, false, "", nil
+	}
+	oldest := list.Threads[len(list.Threads)-1]
+	if !list.HasMore || oldest.ThreadMetadata == nil {
+		return list.Threads, false, "", nil
+	}
+	return list.Threads, true, oldest.ThreadMetadata.ArchiveTimestamp.Format(time.RFC3339), nil
+}
+
 func (c *UserClient) GuildMembers(ctx context.Context, guildID string) ([]*discordgo.Member, error) {
 	// User tokens cannot use the bot GUILD_MEMBERS endpoint for large guilds.
 	// Try the standard endpoint — it works for small guilds and guilds where

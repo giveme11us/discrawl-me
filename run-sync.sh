@@ -55,4 +55,13 @@ fi
 DISCORD_USER_TOKEN="$(<"$token_file")"
 export DISCORD_USER_TOKEN
 
-exec "$python_bin" "$scheduler" "$@"
+"$python_bin" "$scheduler" --memory-policy /home/hermes/.config/discrawl-me/memory-policy-final.json --with-embeddings --budget-seconds 300 "$@"
+rc=$?
+# Ricerca per significato: indicizza i messaggi nuovi messi in coda dal sync
+# (memoria selettiva 30 giorni, 18/10). Errori qui non fanno fallire il ciclo.
+if [[ $rc -eq 0 && " $* " != *" --dry-run "* ]]; then
+  DISCRAWL_EMBED_KEY="${DISCRAWL_EMBED_KEY:-proxy}" timeout 300 \
+    /home/hermes/GitHub/tools/discrawl-me/discrawl-me --config /home/hermes/.config/discrawl-me/config.toml embed run \
+    || echo "embed run fallito (rc=$?), riprovo al prossimo ciclo" >&2
+fi
+exit $rc

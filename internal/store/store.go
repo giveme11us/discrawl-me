@@ -22,8 +22,11 @@ const (
 )
 
 type Store struct {
-	db   *sql.DB
-	path string
+	db               *sql.DB
+	path             string
+	readOnly         bool
+	retention        MessageRetention
+	retentionSkipped int
 }
 
 type Status struct {

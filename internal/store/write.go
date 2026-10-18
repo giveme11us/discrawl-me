@@ -238,18 +238,25 @@ func (s *Store) UpsertMessage(ctx context.Context, message MessageRecord) error 
 }
 
 func (s *Store) UpsertMessageWithOptions(ctx context.Context, message MessageRecord, opts WriteOptions) error {
+	if s.retention != nil {
+		if !s.retention.RetainMessage(message) {
+			s.retentionSkipped++
+			return nil
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
-	if err := upsertMessageTx(ctx, tx, message, opts); err != nil {
+	if err := upsertMessageTx(ctx, tx, message, opts, s.ftsContent(message)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) error {
+	messages = s.applyRetention(messages)
 	if len(messages) == 0 {
 		return nil
 	}
@@ -259,7 +266,7 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	}
 	defer rollback(tx)
 	for _, message := range messages {
-		if err := upsertMessageTx(ctx, tx, message.Record, message.Options); err != nil {
+		if err := upsertMessageTx(ctx, tx, message.Record, message.Options, s.ftsContent(message.Record)); err != nil {
 			return err
 		}
 		if err := replaceAttachmentsTx(ctx, tx, message.Record.ID, message.Attachments); err != nil {
@@ -285,7 +292,7 @@ func (s *Store) UpsertMessages(ctx context.Context, messages []MessageMutation) 
 	return tx.Commit()
 }
 
-func upsertMessageTx(ctx context.Context, tx *sql.Tx, message MessageRecord, opts WriteOptions) error {
+func upsertMessageTx(ctx context.Context, tx *sql.Tx, message MessageRecord, opts WriteOptions, ftsText string) error {
 	now := time.Now().UTC().Format(timeLayout)
 	if _, err := tx.ExecContext(ctx, `
 		insert into messages(
@@ -319,7 +326,7 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, message MessageRecord, opt
 		if _, err := tx.ExecContext(ctx, `
 			insert into message_fts(rowid, message_id, guild_id, channel_id, author_id, author_name, channel_name, content)
 			values(?, ?, ?, ?, ?, ?, ?, ?)
-		`, rowID, message.ID, message.GuildID, message.ChannelID, nullable(message.AuthorID), message.AuthorName, message.ChannelName, message.NormalizedContent); err != nil {
+		`, rowID, message.ID, message.GuildID, message.ChannelID, nullable(message.AuthorID), message.AuthorName, message.ChannelName, ftsText); err != nil {
 			return err
 		}
 	}
@@ -336,6 +343,9 @@ func upsertMessageTx(ctx context.Context, tx *sql.Tx, message MessageRecord, opt
 }
 
 func (s *Store) MarkMessageDeleted(ctx context.Context, guildID, channelID, messageID string, payload any) error {
+	if s.selectiveOrphan(ctx, messageID) {
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

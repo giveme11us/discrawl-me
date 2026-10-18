@@ -15,6 +15,7 @@ import (
 	"github.com/giveme11us/discrawl-me/internal/discord/userclient"
 	"github.com/giveme11us/discrawl-me/internal/embedder"
 	"github.com/giveme11us/discrawl-me/internal/mcp"
+	"github.com/giveme11us/discrawl-me/internal/memory"
 	"github.com/giveme11us/discrawl-me/internal/store"
 	"github.com/giveme11us/discrawl-me/internal/syncer"
 )
@@ -113,8 +114,34 @@ func (r *runtime) runSync(args []string) error {
 	includeDMs := fs.Bool("include-dms", false, "")
 	refreshMembers := fs.Bool("refresh-members", false, "")
 	exactChannels := fs.Bool("exact-channels", false, "")
+	memoryPolicy := fs.String("memory-policy", "", "")
+	memoryPruneMax := fs.Int("memory-prune-max", 5000, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
+	}
+	if *memoryPolicy != "" {
+		if *memoryPruneMax < 1 {
+			return usageErr(fmt.Errorf("--memory-prune-max must be >= 1"))
+		}
+		w, err := memory.InstallWriterRetention(r.ctx, r.store, *memoryPolicy, time.Now().UTC())
+		if err != nil {
+			return configErr(err)
+		}
+		if floorSetter, ok := r.syncer.(interface {
+			SetChannelSinceFloor(func(string) time.Time)
+		}); ok {
+			floorSetter.SetChannelSinceFloor(w.SinceFloor)
+		} else {
+			return configErr(fmt.Errorf("--memory-policy: syncer does not support bounded backfill"))
+		}
+		// Selective memory never downloads assets: attachment metadata and raw
+		// payload are kept, attachment text is not fetched (for retained and
+		// dropped messages alike). Legacy mode keeps the configured default.
+		if configurable, ok := r.syncer.(attachmentTextConfigurer); ok {
+			configurable.SetAttachmentTextEnabled(false)
+		} else {
+			return configErr(fmt.Errorf("--memory-policy: syncer cannot disable asset download"))
+		}
 	}
 	var sinceTime time.Time
 	if *since != "" {
@@ -142,6 +169,32 @@ func (r *runtime) runSync(args []string) error {
 	stats, err := r.syncer.Sync(r.ctx, opts)
 	if err != nil {
 		return err
+	}
+	if *memoryPolicy != "" {
+		// Bounded retention pass inside the SAME sync process (the runner's
+		// lock and per-command budget already cover it; no new job). Order:
+		// sync committed first, then one transaction that persists INFO
+		// entry/exit bookkeeping from the fresh catalog and deletes at most
+		// --memory-prune-max expired messages (oldest first). Cursors are
+		// never touched. A failure is reported as an error after sync data
+		// is already committed; the next cycle retries.
+		pol, err := memory.LoadPolicy(*memoryPolicy, time.Now().UTC())
+		if err != nil {
+			return configErr(err)
+		}
+		dbPath, err := config.ExpandPath(r.cfg.DBPath)
+		if err != nil {
+			return configErr(err)
+		}
+		rep, err := memory.PruneDB(r.ctx, r.store.DB(), dbPath, pol, false, false, *memoryPruneMax)
+		if err != nil {
+			return fmt.Errorf("selective memory retention pass: %w", err)
+		}
+		held, state := int64(0), ""
+		if rep.RollbackWindow != nil {
+			held, state = rep.RollbackWindow.HeldMessages, rep.RollbackWindow.State
+		}
+		r.logger.Info("selective memory retention pass", "expired", rep.Expired, "deleted", rep.Deleted["messages"], "held_for_rollback", held, "rollback_window", state, "remaining", rep.Remaining, "cursor_rows", rep.SyncStateAft)
 	}
 	return r.print(stats)
 }

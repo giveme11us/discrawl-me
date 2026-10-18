@@ -314,15 +314,27 @@ class CycleTests(unittest.TestCase):
             self.assertEqual(set(new_state["targets"]), set(old_state["targets"]))
             for key in old_state["targets"]:
                 self.assertEqual(new_state["targets"][key]["attempts"], old_state["targets"][key]["attempts"] + 1)
-            # Failure in EITHER parent metadata child stops before all messages,
+            # A real ERROR in a parent metadata child stops before all messages,
             # retaining both the prior complete plan and the scheduler state.
             saved_state = Path(paths.state).read_bytes()
-            for gid, status in ((EC, r.STATUS_EXIT_NONZERO), (DU, r.STATUS_TIMEOUT)):
+            for gid, status in ((EC, r.STATUS_EXIT_NONZERO), (DU, r.STATUS_EXIT_NONZERO)):
                 sup.fail_parent_guild = gid; sup.failure_status = status; sup.commands = []
                 self.assertEqual(sup.run(), 4)
                 self.assertTrue(all("discover" in c for c in sup.commands))
                 self.assertEqual(Path(paths.state).read_bytes(), saved_state)
                 self.assertEqual(Path(paths.state + ".discovery.json").read_bytes(), old_plan)
+            # Owner decision t_6e2da362 §4: an EXPECTED parent budget expiry
+            # (timeout) no longer starves approved messages. The top-level plan
+            # stays valid, coverage is explicitly partial and messages still run.
+            sup.fail_parent_guild = DU; sup.failure_status = r.STATUS_TIMEOUT; sup.commands = []
+            self.assertEqual(sup.run(), 0)
+            self.assertTrue(any("sync" in c and "--channels" in c for c in sup.commands))
+            budget_plan = json.loads(Path(paths.state + ".discovery.json").read_text())
+            self.assertEqual(budget_plan["parent_scan"][DU]["status"], r.PARENT_STATUS_BUDGET)
+            self.assertEqual(budget_plan["parent_scan"][EC]["status"], r.PARENT_STATUS_OK)
+            self.assertFalse(budget_plan["thread_coverage_complete"])
+            Path(paths.state + ".discovery.json").write_bytes(old_plan)
+            saved_state = Path(paths.state).read_bytes()
             sup.fail_parent_guild = None; sup.malformed_parent = True; sup.commands = []
             self.assertEqual(sup.run(), 4)
             self.assertTrue(all("discover" in c for c in sup.commands))

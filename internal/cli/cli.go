@@ -145,6 +145,9 @@ func (r *runtime) dispatch(rest []string) error {
 		return r.withServices(false, func() error { return r.runMCP(rest[1:]) })
 	case "doctor":
 		return r.runDoctor(rest[1:])
+	case "memory":
+		// Offline: no config, no token, no Discord client, no migration.
+		return r.runMemory(rest[1:])
 	default:
 		return usageErr(fmt.Errorf("unknown command %q", rest[0]))
 	}

@@ -22,6 +22,9 @@ func (s *Store) AppendReactionEvent(ctx context.Context, rec ReactionEventRecord
 	if rec.EventAt == "" {
 		rec.EventAt = time.Now().UTC().Format(timeLayout)
 	}
+	if s.selectiveOrphan(ctx, rec.MessageID) {
+		return nil
+	}
 	_, err := s.db.ExecContext(ctx, `
 		insert into reaction_events(message_id, channel_id, guild_id, user_id, emoji_name, emoji_id, action, event_at)
 		values(?, ?, ?, ?, ?, ?, ?, ?)

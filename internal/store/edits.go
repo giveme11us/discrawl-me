@@ -18,6 +18,9 @@ func (s *Store) AppendMessageEdit(ctx context.Context, rec MessageEditRecord) er
 	if rec.EditedAt == "" {
 		rec.EditedAt = time.Now().UTC().Format(timeLayout)
 	}
+	if s.selectiveOrphan(ctx, rec.MessageID) {
+		return nil
+	}
 	_, err := s.db.ExecContext(ctx, `
 		insert or ignore into message_edits(message_id, edited_at, content, raw_json)
 		values(?, ?, ?, ?)

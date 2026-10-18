@@ -14,11 +14,14 @@ Per cycle (launchd fires the wrapper every 600 s):
      already running (detected, never killed),
   3. validate the approved manifest strictly before building any command,
   4. discover current metadata in both EasyCop/Dustify, with explicit coverage,
+     inside one metadata budget (300 s): both top-level inventories every
+     cycle, then a bounded, resumable slice of public parents (rotation cursor),
   5. derive a fail-closed collection plan from approved category/role evidence,
-  6. sync the explicit EasyCop inventory first, with no time limit,
+  6. sync the explicit EasyCop inventory first, bounded at 900 s,
   7. spend at most BUDGET seconds on the selected channels, one native child at
      a time, each capped at CHILD seconds or whatever is left of the budget,
      advancing a durable round-robin cursor after every reaped child.
+     Application deadline 1500 s (120 s cleanup margin) inside the 1800 s cap.
 
 Stdlib only, written for the system interpreter /usr/bin/python3 (3.9 on this
 machine): no third-party packages, no TOML parsing, no network access and no
@@ -100,6 +103,26 @@ DEFAULT_GRACE_SECONDS = 5.0
 MIN_SLICE_SECONDS = 1.0
 CHILD_LOG_KEEP = 500
 
+# One application deadline inside the unchanged 1800 s service cap:
+#   metadata (top-level both guilds + bounded parent slice) <= 300 s
+#   EasyCop explicit messages <= 900 s, selected rotation <= 180 s
+#   cleanup margin 120 s; 300 + 900 + 180 + 120 = 1500 s.
+METADATA_BUDGET_SECONDS = 300.0
+TOPLEVEL_DISCOVERY_SECONDS = 120.0
+PARENT_SLICE_BASE_SECONDS = 20.0
+PARENT_SECONDS_EACH = 10.0
+MIN_PARENT_SLICE_SECONDS = PARENT_SLICE_BASE_SECONDS + PARENT_SECONDS_EACH
+EASYCOP_MESSAGE_SECONDS = 900.0
+CLEANUP_MARGIN_SECONDS = 120.0
+APP_DEADLINE_SECONDS = 1500.0
+PARENT_STATUS_OK = "parent_slice_observed"
+PARENT_STATUS_BUDGET = "parent_budget_expired"
+PARENT_STATUS_SKIPPED = "parent_budget_skipped"
+# Public archive pages per parent per discovery run. Progress inside a long
+# archive is durable natively (page cursor in sync_state), so a slow parent
+# resumes where it stopped instead of restarting from its first page.
+ARCHIVE_PAGES_PER_PARENT = 3
+
 PGREP_BIN = "/usr/bin/pgrep"
 PS_BIN = "/bin/ps"
 
@@ -116,6 +139,7 @@ STATUS_EXIT_NONZERO = "child_exit_nonzero"
 STATUS_TIMEOUT = "child_timeout_interrupted"
 STATUS_SIGNAL_INTERRUPTED = "child_signal_interrupted"
 STATUS_SPAWN_FAILED = "child_spawn_failed"
+STATUS_EASYCOP_DISABLED = "easycop_disabled_by_manifest"
 
 STATUS_SEMANTICS = (
     "child_exit_zero means the native process exited 0 for that slice; it is "
@@ -204,7 +228,12 @@ def validate_manifest(doc, expected_guilds=EXPECTED_GUILDS,
     if not isinstance(doc, dict):
         raise ManifestError("manifest root must be an object")
 
-    if doc.get("existing_guild_unfiltered") != easycop_guild_id:
+    # Final selective policy: an EXPLICIT null disables the EasyCop collection
+    # (no EasyCop discovery, no EasyCop sync). A missing key stays an error.
+    if "existing_guild_unfiltered" not in doc:
+        raise ManifestError("existing_guild_unfiltered is required (%s, or null to disable EasyCop)"
+                            % easycop_guild_id)
+    if doc["existing_guild_unfiltered"] is not None and doc["existing_guild_unfiltered"] != easycop_guild_id:
         raise ManifestError(
             "existing_guild_unfiltered must be %s, got %r"
             % (easycop_guild_id, doc.get("existing_guild_unfiltered")))
@@ -274,6 +303,18 @@ def validate_manifest(doc, expected_guilds=EXPECTED_GUILDS,
     return True
 
 
+def easycop_enabled(doc):
+    """EasyCop is collected unless the manifest explicitly sets null."""
+    return doc.get("existing_guild_unfiltered") is not None
+
+
+def discovery_guilds(doc):
+    """Guilds with a per-cycle metadata inventory (EasyCop only if enabled)."""
+    if easycop_enabled(doc):
+        return (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID)
+    return (DUSTIFY_GUILD_ID,)
+
+
 def flatten_targets(doc):
     """Flatten to a stable rotation order.
 
@@ -297,6 +338,70 @@ def flatten_targets(doc):
             if index < len(lst):
                 targets.append(lst[index])
     return targets
+
+
+PRIORITY_DB = _HOME + "/.local/share/discrawl-me/discrawl.db"
+MANIFEST_GUILDS_ALWAYS = ("539258061081018378",)  # Sneaker Development: no catalog discovery
+
+
+def _snowflake_gt(a, b):
+    try:
+        return int(a) > int(b)
+    except (TypeError, ValueError):
+        return False
+
+
+PRIORITY_MAX_AGE_DAYS = 30.0
+
+
+def _snowflake_age_days(value):
+    import time
+    try:
+        ms = (int(value) >> 22) + 1420070400000
+    except (TypeError, ValueError):
+        return float("inf")
+    return (time.time() * 1000 - ms) / 86400000.0
+
+
+def priority_keys(targets, db_path=PRIORITY_DB):
+    """Targets to visit first this cycle (18/10, memoria selettiva).
+
+    Dustify: the per-cycle discovery refreshes channels.raw_json.last_message_id,
+    so a channel whose catalog last message is newer than its sync cursor has
+    news. Sneaker Development has no discovery: its manifest channels are
+    cheap and always visited first. Read-only; any error = no priority.
+    """
+    import sqlite3
+    keys = []
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True, timeout=5)
+        try:
+            ids = [t.channel_id for t in targets]
+            latest = {}
+            for scope, cursor in conn.execute(
+                    "select scope, cursor from sync_state where scope like 'channel:%:latest_message_id'"):
+                latest[scope.split(":")[1]] = cursor
+            catalog = {}
+            for cid, raw in conn.execute("select id, raw_json from channels"):
+                try:
+                    catalog[cid] = (json.loads(raw) or {}).get("last_message_id") or ""
+                except (TypeError, ValueError):
+                    pass
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    for t in targets:
+        key = "%s/%s" % (t.guild_id, t.channel_id)
+        if t.guild_id in MANIFEST_GUILDS_ALWAYS:
+            keys.append(key)
+            continue
+        last = catalog.get(t.channel_id, "")
+        if not last or _snowflake_age_days(last) > PRIORITY_MAX_AGE_DAYS:
+            continue  # nothing new inside the rolling window
+        if not latest.get(t.channel_id) or _snowflake_gt(last, latest.get(t.channel_id)):
+            keys.append(key)
+    return keys
 
 
 def targets_fingerprint(targets):
@@ -337,7 +442,7 @@ def _roles(name):
     return roles
 
 
-def discovery_command(paths, guild_id, thread_parents=()):
+def discovery_command(paths, guild_id, thread_parents=(), archive_pages=None):
     if guild_id not in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
         raise ManifestError("discovery outside the two authorized guilds")
     if not all(_is_snowflake(cid) for cid in thread_parents):
@@ -346,6 +451,10 @@ def discovery_command(paths, guild_id, thread_parents=()):
                "discover", "--guild", guild_id]
     if thread_parents:
         command += ["--thread-parents", ",".join(sorted(set(thread_parents)))]
+        if archive_pages:
+            # Bounded, resumable public archive scan: the native side persists
+            # a page cursor per parent after every page.
+            command += ["--archive-pages", str(int(archive_pages))]
     return command
 
 
@@ -370,7 +479,7 @@ def collection_plan(document, reports):
     """
     effective = copy.deepcopy(document)
     plan = {"version": 1, "guilds": {}, "thread_coverage_complete": False}
-    for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+    for gid in discovery_guilds(document):
         report = reports.get(gid)
         if not isinstance(report, dict) or report.get("guild_id") != gid:
             raise ManifestError("missing/mismatched discovery guild")
@@ -756,8 +865,13 @@ class Supervisor(object):
                  expected_counts=EXPECTED_COUNTS,
                  easycop_guild_id=EASYCOP_GUILD_ID,
                  popen=subprocess.Popen, external_check=None,
-                 env=None, clock=time.monotonic, discovery_reports=None):
+                 env=None, clock=time.monotonic, discovery_reports=None,
+                 memory_policy=None, with_embeddings=False):
         self.discovery_reports = discovery_reports
+        # Opt-in selective memory writer (after cutover only). None keeps the
+        # legacy sync commands byte-identical.
+        self.memory_policy = memory_policy
+        self.with_embeddings = with_embeddings
         self.paths = paths
         self.budget_seconds = float(budget_seconds)
         self.child_seconds = float(child_seconds)
@@ -1000,21 +1114,98 @@ class Supervisor(object):
         raise _Interrupted("SIGTERM" if signum == signal.SIGTERM
                            else str(signum))
 
-    def _discover(self, guild_id, thread_parents=()):
-        command = discovery_command(self.paths, guild_id, thread_parents)
+    def _discover(self, guild_id, thread_parents=(), timeout=None, archive_pages=None):
+        command = discovery_command(self.paths, guild_id, thread_parents, archive_pages)
         # The parent phase makes at least two paced requests per parent, plus
         # archive pagination. A fixed 120 s would starve a 108-parent inventory
         # before its first page at the native default pacing. Keep a bounded
         # parent-scaled window; timeout still fails closed, never publishes a
         # partial message plan. This does not change the selected-message budget.
-        timeout = min(1800.0, 120.0 + 10.0 * len(set(thread_parents)))
-        result = self._run_child(command, timeout,
+        scaled = min(1800.0, 120.0 + 10.0 * len(set(thread_parents)))
+        if timeout is not None:
+            scaled = min(scaled, float(timeout))
+        result = self._run_child(command, scaled,
                                  Target(guild_id, "metadata", guild_id, "metadata", "metadata"))
         if result["status"] != STATUS_EXIT_ZERO:
             raise ManifestError("metadata discovery failed for guild %s (%s)"
                                 % (guild_id, result["status"]))
         with open(result["child_log"], encoding="utf-8") as handle:
             return json.load(handle)
+
+    def _parent_state_path(self):
+        return self.paths.state + ".parents.json"
+
+    def _with_memory(self, command):
+        """Append the opt-in selective writer / embedding flags to a native `sync` command."""
+        if not self.memory_policy and not self.with_embeddings:
+            return command
+        if "sync" not in command:
+            raise ManifestError("--memory-policy/--with-embeddings apply only to sync commands")
+        command = list(command)
+        if self.memory_policy:
+            command += ["--memory-policy", self.memory_policy]
+        if self.with_embeddings:
+            command.append("--with-embeddings")
+        return command
+
+    def _parent_slices(self, parents, meta_deadline, reports):
+        """Bounded, resumable public-parent metadata inside the metadata budget.
+
+        Each guild gets an equal share of what is left of the metadata budget.
+        A slice scans the next parents of a sorted rotation from a persisted
+        cursor. Budget expiry (timeout) is EXPECTED: the valid top-level report
+        is kept, coverage is marked partial, the cursor does not advance and the
+        next slice is halved. A non-zero exit is an ERROR and stays fail-closed.
+        Returns (reports, parent_state, coverage) without writing state.
+        """
+        state = read_state(self._parent_state_path())
+        guilds_state = state.get("guilds") if isinstance(state.get("guilds"), dict) else {}
+        coverage = {}
+        order = [gid for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID) if parents.get(gid)]
+        for index, gid in enumerate(order):
+            ids = sorted(set(parents[gid]))
+            fingerprint = hashlib.sha256(",".join(ids).encode()).hexdigest()
+            entry = guilds_state.get(gid) if isinstance(guilds_state.get(gid), dict) else {}
+            cursor = entry.get("cursor", 0)
+            if not isinstance(cursor, int) or cursor < 0 or entry.get("fingerprint") != fingerprint:
+                # A changed parent set keeps its position modulo the new size;
+                # never restarts silently from a stale index beyond the list.
+                cursor = cursor if isinstance(cursor, int) and cursor >= 0 else 0
+            cursor = cursor % len(ids)
+            hint = entry.get("slice_hint")
+            if not isinstance(hint, int) or hint < 1:
+                hint = len(ids)
+            share = (meta_deadline - self._clock()) / float(len(order) - index)
+            info = {"total_parents": len(ids), "cursor_before": cursor}
+            if share < MIN_PARENT_SLICE_SECONDS:
+                info.update(status=PARENT_STATUS_SKIPPED, scanned=0, cursor_after=cursor)
+                entry = {"fingerprint": fingerprint, "cursor": cursor, "slice_hint": hint}
+            else:
+                capacity = int((share - PARENT_SLICE_BASE_SECONDS) // PARENT_SECONDS_EACH)
+                size = max(1, min(len(ids), hint, capacity))
+                chunk = [ids[(cursor + k) % len(ids)] for k in range(size)]
+                try:
+                    reports[gid] = self._discover(gid, chunk, timeout=share,
+                                                  archive_pages=ARCHIVE_PAGES_PER_PARENT)
+                    after = (cursor + size) % len(ids)
+                    info.update(status=PARENT_STATUS_OK, scanned=size, cursor_after=after,
+                                rotation_wrapped=cursor + size >= len(ids))
+                    entry = {"fingerprint": fingerprint, "cursor": after,
+                             "slice_hint": min(len(ids), max(hint, size) * 2)}
+                except ManifestError as exc:
+                    if STATUS_TIMEOUT not in str(exc):
+                        raise  # real error: fail-closed as before
+                    # A single slow parent must not block the rotation: its
+                    # archive page cursor is durable natively, so step past it
+                    # and resume it on its next turn. Larger slices halve.
+                    after = (cursor + 1) % len(ids) if size == 1 else cursor
+                    info.update(status=PARENT_STATUS_BUDGET, scanned=0, cursor_after=after,
+                                attempted=size, advanced_past_slow_parent=size == 1)
+                    entry = {"fingerprint": fingerprint, "cursor": after,
+                             "slice_hint": max(1, size // 2)}
+            coverage[gid] = info
+            guilds_state[gid] = entry
+        return reports, {"version": 1, "guilds": guilds_state, "updated_at": _utcnow()}, coverage
 
     def _cycle(self):
         cycle_started = self._clock()
@@ -1050,22 +1241,35 @@ class Supervisor(object):
             validate_manifest(document, self.expected_guilds,
                               self.expected_counts, self.easycop_guild_id)
             reports = {}
-            for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
-                reports[gid] = self._discover(gid)
+            meta_deadline = cycle_started + METADATA_BUDGET_SECONDS
+            inventoried = discovery_guilds(document)
+            for index, gid in enumerate(inventoried):
+                # Both top-level inventories run EVERY cycle, inside the
+                # metadata budget; failure or expiry here stays fail-closed.
+                share = (meta_deadline - self._clock()) / float(len(inventoried) - index)
+                if share < MIN_SLICE_SECONDS:
+                    raise ManifestError("metadata budget exhausted before top-level %s" % gid)
+                reports[gid] = self._discover(gid, timeout=min(TOPLEVEL_DISCOVERY_SECONDS, share))
             parents = discovery_parent_ids(document, reports)
-            for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
-                if parents[gid]:
-                    reports[gid] = self._discover(gid, parents[gid])
+            reports, parent_state, parent_coverage = self._parent_slices(
+                parents, meta_deadline, reports)
             effective, plan = collection_plan(document, reports)
+            plan["parent_scan"] = parent_coverage
+            metadata_elapsed = round(self._clock() - cycle_started, 3)
             targets = flatten_targets(effective)
-            easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
-                           if d["collect"] and d["type"] in (0, 5, 10, 11)]
-            if not easycop_ids:
-                raise ManifestError("empty EasyCop inventory; no unrestricted fallback")
+            easycop_ids = None
+            if easycop_enabled(document):
+                easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
+                               if d["collect"] and d["type"] in (0, 5, 10, 11)]
+                if not easycop_ids:
+                    raise ManifestError("empty EasyCop inventory; no unrestricted fallback")
             # Save only after both current reports and selection are validated.
             write_state_atomic(self.paths.state + ".discovery.json", plan)
+            write_state_atomic(self._parent_state_path(), parent_state)
             self._log("discovery_plan", path=self.paths.state + ".discovery.json",
-                      targets=len(targets), thread_coverage_complete=False)
+                      targets=len(targets), thread_coverage_complete=False,
+                      parent_scan=parent_coverage,
+                      metadata_elapsed_seconds=metadata_elapsed)
         except (ManifestError, ValueError, OSError, TypeError, KeyError) as exc:
             self._log("discovery_failed", error=str(exc),
                       action="no message sync; previous selection/cursors preserved")
@@ -1075,15 +1279,29 @@ class Supervisor(object):
             self._prune_child_logs()
             return 4
 
-        easycop_cmd = easycop_command(self.paths, self.easycop_guild_id, easycop_ids)
-        try:
-            easycop = self._run_child(easycop_cmd, None, None)
-        except Exception as exc:  # could not even start the native process
-            self._log("easycop_error", guild_id=self.easycop_guild_id,
-                      error="%s: %s" % (type(exc).__name__, exc))
-            easycop = {"status": STATUS_SPAWN_FAILED, "exit_code": None,
+        app_deadline = cycle_started + APP_DEADLINE_SECONDS
+        if easycop_ids is None:
+            # EasyCop disabled by the manifest (explicit null): nothing launched.
+            easycop = {"status": STATUS_EASYCOP_DISABLED, "exit_code": 0,
                        "duration_seconds": None, "child_log": None,
-                       "pid_child": None, "command": easycop_cmd}
+                       "pid_child": None, "command": None}
+        else:
+            easycop_cmd = self._with_memory(easycop_command(self.paths, self.easycop_guild_id, easycop_ids))
+            # EasyCop keeps priority but is bounded: it may use up to 900 s while
+            # always leaving the selected budget and the cleanup margin.
+            easycop_timeout = min(EASYCOP_MESSAGE_SECONDS,
+                                  app_deadline - self._clock() - self.budget_seconds
+                                  - CLEANUP_MARGIN_SECONDS)
+            try:
+                if easycop_timeout < MIN_SLICE_SECONDS:
+                    raise RuntimeError("application deadline leaves no EasyCop budget")
+                easycop = self._run_child(easycop_cmd, easycop_timeout, None)
+            except Exception as exc:  # could not even start the native process
+                self._log("easycop_error", guild_id=self.easycop_guild_id,
+                          error="%s: %s" % (type(exc).__name__, exc))
+                easycop = {"status": STATUS_SPAWN_FAILED, "exit_code": None,
+                           "duration_seconds": None, "child_log": None,
+                           "pid_child": None, "command": easycop_cmd}
         self._log("easycop_sync", guild_id=self.easycop_guild_id,
                   status=easycop["status"], exit_code=easycop["exit_code"],
                   duration_seconds=easycop["duration_seconds"],
@@ -1091,30 +1309,38 @@ class Supervisor(object):
                   pid_child=easycop["pid_child"],
                   command=easycop["command"])
         easycop_failed = easycop["exit_code"] != 0
+        easycop_budget_expired = easycop["status"] == STATUS_TIMEOUT
 
         selected_failed = False
         attempted = 0
         if targets:
             try:
-                attempted = self._run_selected(targets)
+                attempted = self._run_selected(
+                    targets, budget=min(self.budget_seconds,
+                                        app_deadline - self._clock() - CLEANUP_MARGIN_SECONDS))
             except Exception as exc:  # never let selected work break the cycle
                 selected_failed = True
                 self._log("selected_phase_error",
                           error="%s: %s" % (type(exc).__name__, exc))
 
-        if easycop_failed:
+        if easycop_failed and not easycop_budget_expired:
             exit_code = EXIT_EASYCOP_FAILED
         elif selected_failed:
             exit_code = 4
         else:
+            # Expected EasyCop budget expiry is NOT an error: native page
+            # checkpoints are durable and the next cycle resumes from them.
             exit_code = EXIT_OK
         self._prune_child_logs()
         self._log("cycle_end", exit_code=exit_code, targets_attempted=attempted,
                   easycop_status=easycop["status"],
+                  easycop_budget_expired=easycop_budget_expired,
                   elapsed_seconds=round(self._clock() - cycle_started, 3))
         return exit_code
 
-    def _run_selected(self, targets):
+    def _run_selected(self, targets, budget=None):
+        if budget is None:
+            budget = self.budget_seconds
         state = read_state(self.paths.state)
         fingerprint = targets_fingerprint(targets)
         if (state.get("targets_fingerprint") != fingerprint
@@ -1126,8 +1352,12 @@ class Supervisor(object):
             cursor = 0
         cursor = cursor % len(targets)
 
-        deadline = self._clock() + self.budget_seconds
+        deadline = self._clock() + budget
         attempted = 0
+        by_key = dict(("%s/%s" % (t.guild_id, t.channel_id), i) for i, t in enumerate(targets))
+        priority = [by_key[k] for k in priority_keys(targets) if k in by_key]
+        visited = set()
+        self._log("priority_plan", priority_targets=len(priority), rotation_targets=len(targets))
         while True:
             if self.max_targets is not None and attempted >= self.max_targets:
                 break
@@ -1136,15 +1366,23 @@ class Supervisor(object):
             remaining = deadline - self._clock()
             if remaining < MIN_SLICE_SECONDS:
                 break
-            target = targets[cursor]
+            from_priority = bool(priority)
+            if from_priority:
+                index = priority.pop(0)
+            else:
+                while cursor in visited and len(visited) < len(targets):
+                    cursor = (cursor + 1) % len(targets)
+                index = cursor
+            visited.add(index)
+            target = targets[index]
             limit = min(self.child_seconds, remaining)
-            command = selected_command(self.paths, target)
+            command = self._with_memory(selected_command(self.paths, target))
             key = "%s/%s" % (target.guild_id, target.channel_id)
             previous = state["targets"].get(key, {})
             attempts = previous.get("attempts", 0)
             if not isinstance(attempts, int):
                 attempts = 0
-            next_cursor = (cursor + 1) % len(targets)
+            next_cursor = cursor if from_priority else (cursor + 1) % len(targets)
 
             reaped = {"done": False}
 
@@ -1216,16 +1454,20 @@ class Supervisor(object):
             document = load_manifest(self.paths.manifest)
             validate_manifest(document, self.expected_guilds,
                               self.expected_counts, self.easycop_guild_id)
+            if not easycop_enabled(document):
+                out("EasyCop DISABLED by manifest (existing_guild_unfiltered: null): no EasyCop discovery or sync")
             if self.discovery_reports is not None:
                 parents = discovery_parent_ids(document, self.discovery_reports)
                 out("step 0b — public parent metadata, before the final message plan:")
-                for gid in (EASYCOP_GUILD_ID, DUSTIFY_GUILD_ID):
+                for gid in discovery_guilds(document):
                     if parents[gid]:
                         out("  " + _quote(discovery_command(self.paths, gid, parents[gid])))
+                enabled = easycop_enabled(document)
                 document, plan = collection_plan(document, self.discovery_reports)
-                easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
-                               if d["collect"] and d["type"] in (0, 5, 10, 11)]
-                easycop = easycop_command(self.paths, self.easycop_guild_id, easycop_ids)
+                if enabled:
+                    easycop_ids = [d["id"] for d in plan["guilds"][EASYCOP_GUILD_ID]["decisions"]
+                                   if d["collect"] and d["type"] in (0, 5, 10, 11)]
+                    easycop = self._with_memory(easycop_command(self.paths, self.easycop_guild_id, easycop_ids))
                 out("offline fixture decisions: " + json.dumps(plan, sort_keys=True))
             else:
                 out("BASELINE PREVIEW ONLY: new targets/rename/move require current discovery; not a live collection plan")
@@ -1245,7 +1487,7 @@ class Supervisor(object):
         cursor = cursor % len(targets)
 
         out("")
-        out("step 1 — EasyCop explicit inventory (no time limit):")
+        out("step 1 — EasyCop explicit inventory (bounded: max %ds):" % int(EASYCOP_MESSAGE_SECONDS))
         out("  " + _quote(easycop) if easycop else
             "  [resolved only after current metadata discovery; no unrestricted fallback]")
         out("")
@@ -1256,7 +1498,7 @@ class Supervisor(object):
             out("  [%03d] %s / %s (%s, %s)"
                 % (offset, target.guild_name, target.channel_name,
                    target.guild_id, target.channel_type))
-            out("        " + _quote(selected_command(self.paths, target)))
+            out("        " + _quote(self._with_memory(selected_command(self.paths, target))))
         return EXIT_OK
 
 
@@ -1313,7 +1555,19 @@ def parse_args(argv):
                              "budget (default: %(default)s)")
     parser.add_argument("--max-targets", type=_positive_int, default=None,
                         help="stop after this many selected targets this cycle")
-    return parser.parse_args(argv)
+    parser.add_argument("--with-embeddings", action="store_true",
+                        help="append --with-embeddings to native sync commands so new "
+                             "retained messages are enqueued for `embed run`")
+    parser.add_argument("--memory-policy", default=None,
+                        help="absolute path of the selective memory policy JSON; "
+                             "appends --memory-policy to native sync commands "
+                             "(selective DB only, after cutover)")
+    args = parser.parse_args(argv)
+    if args.memory_policy is not None:
+        p = args.memory_policy
+        if not os.path.isabs(p) or os.path.islink(p) or not os.path.isfile(p):
+            parser.error("--memory-policy must be an absolute regular file")
+    return args
 
 
 def main(argv=None):
@@ -1332,7 +1586,9 @@ def main(argv=None):
                             budget_seconds=args.budget_seconds,
                             child_seconds=args.child_seconds,
                             max_targets=args.max_targets,
-                            dry_run=args.dry_run, discovery_reports=reports)
+                            dry_run=args.dry_run, discovery_reports=reports,
+                            memory_policy=args.memory_policy,
+                            with_embeddings=args.with_embeddings)
     return supervisor.run()
 
 

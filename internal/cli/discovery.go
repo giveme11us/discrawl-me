@@ -14,8 +14,19 @@ func (r *runtime) runDiscover(args []string) error {
 	fs.SetOutput(io.Discard)
 	guild := fs.String("guild", "", "")
 	parents := fs.String("thread-parents", "", "")
+	archivePages := fs.Int("archive-pages", 0, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
+	}
+	if *archivePages < 0 {
+		return usageErr(fmt.Errorf("--archive-pages must be >= 0"))
+	}
+	if *archivePages > 0 {
+		pager, ok := r.syncer.(interface{ SetArchivePagesPerParent(int) })
+		if !ok {
+			return fmt.Errorf("--archive-pages is not supported by this sync service")
+		}
+		pager.SetArchivePagesPerParent(*archivePages)
 	}
 	if *guild == "" || len(fs.Args()) != 0 {
 		return usageErr(fmt.Errorf("discover requires --guild ID; no implicit/all guild or DM discovery"))

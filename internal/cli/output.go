@@ -86,6 +86,11 @@ Commands:
   channels
   status
   doctor
+  memory export --source DB --output NEW_DB --policy POLICY_JSON [--now RFC3339Z] [--hash-source]
+  memory status --db DB [--policy POLICY_JSON] [--now RFC3339Z]   (read-only, never creates)
+  memory prune --db SELECTIVE_DB --policy POLICY_JSON [--now] [--dry-run] [--vacuum]
+  memory mcp --db SELECTIVE_DB [--policy POLICY_JSON]   (offline, read-only, no token)
+  sync ... --memory-policy POLICY_JSON   (opt-in selective writer; selective DB only)
 `)
 }
 

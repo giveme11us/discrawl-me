@@ -39,6 +39,15 @@ type Syncer struct {
 	messageChannelTimeout time.Duration
 	messageSyncLogEvery   time.Duration
 	messageSyncWaitEvery  time.Duration
+	channelSinceFloor     func(channelID string) time.Time
+	archivePagesPerParent int
+}
+
+// SetChannelSinceFloor installs a per-channel lower bound for message
+// backfill (selective memory). The effective since is the later of the
+// requested since and the floor; reaching it never sets history_complete.
+func (s *Syncer) SetChannelSinceFloor(floor func(channelID string) time.Time) {
+	s.channelSinceFloor = floor
 }
 
 type SyncOptions struct {

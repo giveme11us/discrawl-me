@@ -1,0 +1,13 @@
+{
+  "title": "Weekly Releases",
+  "description": "**This Week Releases:**",
+  "fields": [
+    {"name": "**```Monday / Lunedì / Maandag - 19/10```**", "value": "- Synthetic verification item <#1547163155417927770>\n", "inline": false},
+    {"name": "**```Tuesday / Martedì / Dinsdag - 20/10```**", "value": "✖️\n", "inline": false},
+    {"name": "**```Wednesday / Mercoledì / Woensdag - 21/10```**", "value": "✖️\n", "inline": false},
+    {"name": "**```Thursday / Giovedì / Donderdag - 22/10```**", "value": "✖️\n", "inline": false},
+    {"name": "**```Friday / Venerdì / Vrijdag - 23/10```**", "value": "✖️\n", "inline": false},
+    {"name": "**```Saturday / Sabato / Zaterdag - 24/10```**", "value": "✖️\n", "inline": false}
+  ],
+  "image_mode": "manual"
+}
