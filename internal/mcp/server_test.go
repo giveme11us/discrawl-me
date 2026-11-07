@@ -85,6 +85,17 @@ func TestMCPInitialize(t *testing.T) {
 	require.Contains(t, string(result), "protocolVersion")
 }
 
+func TestMCPNotificationsGetNoResponse(t *testing.T) {
+	s := setupTestStore(t)
+	server := NewServer(NewToolHandler(s), nil)
+	for _, method := range []string{"notifications/initialized", "initialized", "notifications/cancelled", "unknown/thing"} {
+		require.Nil(t, server.handleRequest(context.Background(), jsonRPCRequest{JSONRPC: "2.0", Method: method}), method)
+	}
+	resp := server.handleRequest(context.Background(), jsonRPCRequest{JSONRPC: "2.0", ID: json.RawMessage("7"), Method: "unknown/thing"})
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.Error)
+}
+
 func TestMCPToolsList(t *testing.T) {
 	s := setupTestStore(t)
 	tools := NewToolHandler(s)

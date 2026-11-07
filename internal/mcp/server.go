@@ -79,6 +79,11 @@ func (s *Server) Run(ctx context.Context, stdin io.Reader, stdout io.Writer) err
 }
 
 func (s *Server) handleRequest(ctx context.Context, req jsonRPCRequest) *jsonRPCResponse {
+	// JSON-RPC notifications (no id, e.g. notifications/initialized) never get a
+	// response: replying makes MCP clients log a parse error.
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		return nil
+	}
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
